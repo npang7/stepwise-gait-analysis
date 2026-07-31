@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+miniapp_uploads/
+miniapp_reports/
+runtime_data/
+*.zip

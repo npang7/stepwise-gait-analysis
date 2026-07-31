@@ -1,0 +1,429 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=0.85in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    citecolor=black
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\renewcommand{\arraystretch}{1.18}
+
+\newcommand{\notebookentry}[4]{
+    \clearpage
+    \section*{Lab Notebook Entry: #1}
+    \addcontentsline{toc}{section}{#1}
+    \textbf{Date:} #2 \hfill \textbf{Project:} StepWise Gait Screening System\\
+    \textbf{Session Objective:} #3
+
+    #4
+
+    \vspace{1em}
+    \noindent\textbf{TA / Witness Check:} \rule{0.35\linewidth}{0.4pt}
+    \hfill
+    \textbf{Page / Date:} \rule{0.20\linewidth}{0.4pt}
+}
+
+\newcommand{\figplaceholder}[2]{
+    \begin{figure}[H]
+    \centering
+    \fbox{\parbox{0.82\linewidth}{\centering #1}}
+    \caption{#2}
+    \end{figure}
+}
+
+\title{\textbf{StepWise Lab Notebook Extract}\\
+\large Software Data Analysis, Report Generation, and Mini Program Interface}
+\author{Nuo Pang}
+\date{Spring 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Scope of This Notebook Extract}
+This notebook extract records the software-analysis portion of the StepWise project. It covers the TXT data-processing pipeline, stance segmentation, gait-feature formulas, rule-based screening logic, web report generation, WeChat Mini Program interface, and software verification. It is intended to be printed and attached to the physical laboratory notebook as dated engineering records.
+
+\textbf{Prototype sensor mapping used in the final software demo:}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Channel & Physical location & Analysis meaning \\
+\midrule
+P1 & Little-toe root & Lateral forefoot pressure \\
+P2 & Heel & Rearfoot / heel pressure \\
+P3 & Arch & Arch / midfoot pressure \\
+P4 & Big-toe root & Medial forefoot pressure \\
+Pitch & Foot-mounted IMU orientation & Frontal-plane tilt proxy \\
+Roll & Foot-mounted IMU orientation & Landing sole-ground angle proxy \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Important limitation:} StepWise reports engineering screening indicators such as ``tendency'', ``loading bias'', and ``not confirmed''. It does not provide clinical diagnosis.
+
+\tableofcontents
+
+\notebookentry
+{Initial Data-Format Review and Software Scope}
+{2026-04-23}
+{Define how the PC-saved gait TXT file should be parsed and determine which raw sensor fields are needed for offline analysis.}
+{
+\subsection*{Record of Work}
+The first representative StepWise gait file was inspected to determine the available data fields. Each valid row contains four pressure channels and nine IMU/orientation fields:
+\[
+\left[P_1,P_2,P_3,P_4,a_x,a_y,a_z,\omega_x,\omega_y,\omega_z,\theta,\phi,\psi\right].
+\]
+Here $a_x$--$a_z$ are acceleration channels, $\omega_x$--$\omega_z$ are gyroscope channels, and $\theta,\phi,\psi$ are Pitch, Roll, and Yaw. The software task was defined as converting these raw rows into interpretable gait-screening features and reports.
+
+\subsection*{Design Decisions}
+\begin{enumerate}[leftmargin=*]
+    \item Use Python for offline analysis because the saved TXT format can be parsed with standard data-science tools.
+    \item Preserve both pressure and IMU fields in the processed outputs so that pressure evidence and angle evidence can be compared.
+    \item Generate user-facing outputs only after basic data-quality checks, because short or incomplete sessions can produce misleading conclusions.
+\end{enumerate}
+
+\subsection*{Initial Data-Flow Diagram}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{presentation_assets/slide1_plain_pipeline.png}
+\caption{Planned StepWise data-analysis pipeline from standing/walking trials to user-facing reports.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection*{Problems and Notes}
+The raw IMU angles cannot be interpreted as anatomical zero degrees. The orientation values depend on sensor mounting, insole bending, and whether the insole is placed on the left or right foot. Therefore, a standing calibration trial is required before Pitch and Roll are used in screening logic.
+
+\subsection*{Next Step}
+Implement a parser that reads the TXT file, converts numeric columns, removes invalid rows, and exports a processed CSV for later validation.
+}
+
+\notebookentry
+{TXT Parser, Channel Mapping, and Basic Feature Extraction}
+{2026-05-10}
+{Implement the first offline parser and calculate basic pressure, acceleration, and orientation features.}
+{
+\subsection*{Record of Work}
+A Python script was developed to read the saved StepWise TXT file, convert pressure and IMU fields to numeric data, and calculate basic features. The first required pressure feature was total plantar pressure:
+\begin{equation}
+P_{\mathrm{total}}[k] = P_1[k]+P_2[k]+P_3[k]+P_4[k].
+\label{eq:ptotal}
+\end{equation}
+The acceleration and gyroscope magnitudes were calculated for signal inspection:
+\begin{equation}
+\lVert a[k]\rVert = \sqrt{a_x[k]^2+a_y[k]^2+a_z[k]^2},
+\quad
+\lVert \omega[k]\rVert = \sqrt{\omega_x[k]^2+\omega_y[k]^2+\omega_z[k]^2}.
+\end{equation}
+
+\subsection*{Engineering Purpose}
+The pressure channels are used for contact detection and loading-distribution features. The IMU orientation channels are used for calibrated PitchDelta and LandingAngle measurements. Acceleration and gyroscope magnitudes are included mainly for signal-quality inspection.
+
+\subsection*{Preliminary Output Files}
+\begin{itemize}[leftmargin=*]
+    \item Processed CSV table containing parsed pressure and IMU data.
+    \item Step-level CSV table after stance segmentation.
+    \item Summary JSON file for the web and Mini Program interfaces.
+    \item User report, technical report, and data guide HTML files.
+\end{itemize}
+
+\subsection*{Debugging Notes}
+The early parser worked on controlled sample files, but the first test data had a low effective sample rate and too few stance phases. This showed that the software must report data-quality warnings instead of forcing a posture result from weak data.
+
+\subsection*{Next Step}
+Upgrade simple threshold logic into hysteresis-based stance segmentation and add standing calibration support.
+}
+
+\notebookentry
+{Stance Segmentation and Calibration Equations}
+{2026-05-15}
+{Define a repeatable method for detecting stance phases and calculating calibrated Pitch/Roll features.}
+{
+\subsection*{Record of Work}
+Foot contact is detected from total pressure using an adaptive threshold with hysteresis:
+\begin{equation}
+T_{\mathrm{on}}=\max\left(5~\mathrm{N},0.08\max_k P_{\mathrm{total}}[k]\right),
+\label{eq:ton}
+\end{equation}
+\begin{equation}
+T_{\mathrm{off}}=0.55T_{\mathrm{on}}.
+\label{eq:toff}
+\end{equation}
+A stance phase starts when $P_{\mathrm{total}}$ rises above $T_{\mathrm{on}}$ and ends when it falls below $T_{\mathrm{off}}$. Hysteresis was used to prevent false contact transitions caused by noise around a single threshold. The constants in Equations \ref{eq:ton} and \ref{eq:toff} are project engineering thresholds, not clinical diagnostic thresholds.
+
+\subsection*{Standing Calibration}
+The standing trial defines neutral orientation:
+\begin{equation}
+Pitch_0 = \mathrm{mean}(Pitch_{\mathrm{standing}}),
+\quad
+Roll_0 = \mathrm{mean}(Roll_{\mathrm{standing}}).
+\label{eq:standing}
+\end{equation}
+During walking, StepWise calculates:
+\begin{equation}
+PitchDelta = \mathrm{mean}(Pitch_{\mathrm{stance}})-Pitch_0,
+\label{eq:pitchdelta}
+\end{equation}
+\begin{equation}
+LandingAngle =
+\mathrm{mean}(Roll_{\mathrm{early~stance}})-Roll_0.
+\label{eq:landing}
+\end{equation}
+The early stance window is the first 20\% of each detected stance phase. This window is used to represent the initial contact portion of the stance.
+
+\subsection*{Decision Record}
+PitchDelta is the primary angle feature for inversion/eversion screening because inversion and eversion are frontal-plane foot-posture changes. LandingAngle is the primary angle feature for forefoot/rearfoot landing because, under the current sensor mounting, Roll represents front-back foot tilt.
+
+\subsection*{Test Notes}
+The final demo mapping was updated to:
+\[
+P1=\mathrm{lateral~forefoot},\quad
+P2=\mathrm{heel},\quad
+P3=\mathrm{arch},\quad
+P4=\mathrm{medial~forefoot}.
+\]
+The software was modified so this mapping can be changed through command-line arguments and later through the Mini Program interface.
+
+\subsection*{Next Step}
+Define regional pressure ratios and pressure-center proxies to support the angle-based screening rules.
+}
+
+\notebookentry
+{Regional Loading, CoP Proxies, and Screening Rules}
+{2026-05-17}
+{Complete the mathematical features and define conservative posture-risk output rules.}
+{
+\subsection*{Record of Work}
+Regional loading ratios were defined by normalizing each region by total pressure:
+\begin{equation}
+RearRatio = \frac{P_2}{P_{\mathrm{total}}},
+\quad
+ArchRatio = \frac{P_3}{P_{\mathrm{total}}},
+\quad
+FrontRatio = \frac{P_1+P_4}{P_{\mathrm{total}}},
+\label{eq:regionalratios}
+\end{equation}
+\begin{equation}
+MedialRatio = \frac{P_4}{P_{\mathrm{total}}},
+\quad
+LateralRatio = \frac{P_1}{P_{\mathrm{total}}}.
+\label{eq:mlratios}
+\end{equation}
+The coarse pressure-center proxies were:
+\begin{equation}
+CoP_{\mathrm{AP}} =
+\frac{0P_2+0.45P_3+1.0(P_1+P_4)}{P_{\mathrm{total}}},
+\label{eq:copap}
+\end{equation}
+\begin{equation}
+CoP_{\mathrm{ML}} =
+\frac{0.45P_4-0.45P_1}{P_{\mathrm{total}}}.
+\label{eq:copml}
+\end{equation}
+Equations \ref{eq:copap} and \ref{eq:copml} are four-sensor insole estimates, not force-plate center-of-pressure measurements.
+
+\subsection*{Risk Logic}
+\begin{longtable}{p{0.24\linewidth}p{0.30\linewidth}p{0.38\linewidth}}
+\toprule
+\textbf{Output} & \textbf{Required evidence} & \textbf{Conservative behavior} \\
+\midrule
+Possible eversion / over-pronation tendency &
+$PitchDelta\ge +5^\circ$ &
+Pressure support may include high medial loading, high arch loading, or medial $CoP_{\mathrm{ML}}$. If pressure is medial but PitchDelta does not support eversion, report medial loading bias only. \\
+Possible inversion / over-supination tendency &
+$PitchDelta\le -5^\circ$ &
+Pressure support may include high lateral loading or lateral $CoP_{\mathrm{ML}}$. If pressure is lateral but PitchDelta does not support inversion, report lateral loading bias only. \\
+Forefoot-first landing tendency &
+$LandingAngle\le -12^\circ$ or $EarlyFrontRatio\ge 0.65$ &
+Agreement between Roll angle and pressure increases confidence. If they conflict, do not show a user-facing landing-risk card. \\
+Rearfoot / heel-first landing tendency &
+$LandingAngle\ge +12^\circ$ or $EarlyRearRatio\ge 0.65$ &
+Agreement between Roll angle and pressure increases confidence. If they conflict, keep the conflict in technical metrics only. \\
+Reduced push-off warning &
+Low late forefoot participation or weak $CoP_{\mathrm{AP}}$ progression &
+Report reduced pressure transfer, not muscle weakness or neurological diagnosis. \\
+\bottomrule
+\end{longtable}
+
+\subsection*{Evidence Basis}
+The direction of the rules is based on IMU calibration practice, foot-mounted IMU gait analysis, FSR insole gait-event detection, and plantar-pressure analysis literature \cite{opensense,gaitmap,falbriard2020,sanchis2024,ngueleu2019}. The numeric thresholds are engineering screening thresholds selected to reduce false positives for this prototype.
+
+\subsection*{Figure for Notebook}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{presentation_assets/slide2_core_formulas_evidence_basis.png}
+\caption{Summary table of formulas and evidence basis used in the StepWise analysis pipeline.}
+\label{fig:formulas}
+\end{figure}
+
+\subsection*{Next Step}
+Generate separate user-facing and technical reports so that users see simple conclusions while engineering reviewers can inspect formulas, thresholds, and conflicts.
+}
+
+\notebookentry
+{Web Report, Data Guide, and Technical Report Generation}
+{2026-05-18}
+{Build user-readable and technical HTML reports from the Python analysis outputs.}
+{
+\subsection*{Record of Work}
+The offline pipeline was extended to generate three HTML outputs:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{User report:} simple risk cards, sensor evidence, and recommended next steps.
+    \item \textbf{Data guide:} formulas, threshold definitions, and evidence basis.
+    \item \textbf{Technical report:} diagnostic plots, processed metrics, and data-quality warnings.
+\end{itemize}
+
+\subsection*{Design Decision}
+The user report should not show every internal metric by default. It should show a clear conclusion, sensor evidence, and a short retest recommendation. More detailed formulas and conflict cases are kept in the data guide or technical report.
+
+\subsection*{Requirement and Verification Summary}
+\begin{center}
+\begin{tabular}{p{0.34\linewidth}p{0.56\linewidth}}
+\toprule
+\textbf{Software requirement} & \textbf{Verification result} \\
+\midrule
+Parse StepWise TXT files & Walking and standing TXT files are parsed into pressure and IMU fields. \\
+Detect stance phases & Normal walking trial is used to verify stance segmentation from total plantar pressure. \\
+Support calibrated screening & Standing trial provides $Pitch_0$ and $Roll_0$. \\
+Generate reports & User report, data guide, and technical report are generated from the same analysis result. \\
+Avoid unsupported diagnosis & Report wording uses ``tendency'', ``loading bias'', and ``not confirmed''. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Debugging Notes}
+Pressure/Roll conflict initially produced confusing user-facing messages. The rule was revised so that conflicting landing evidence is removed from the user risk cards and kept only in technical metrics. This avoids overclaiming when angle and pressure evidence disagree.
+
+\subsection*{Figure for Notebook}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\linewidth]{presentation_assets/slide4_requirement_verification_table.png}
+\caption{Software requirement and verification summary for the analysis pipeline and user-facing outputs.}
+\label{fig:reqver}
+\end{figure}
+
+\subsection*{Next Step}
+Expose the same analysis through a simple user workflow in a WeChat Mini Program.
+}
+
+\notebookentry
+{WeChat Mini Program and Cloud Backend Interface}
+{2026-05-18}
+{Build a user-facing Mini Program workflow that calls the cloud-hosted StepWise analysis backend.}
+{
+\subsection*{Record of Work}
+A WeChat Mini Program interface was implemented with the following pages:
+\begin{itemize}[leftmargin=*]
+    \item Home page with analysis, education, guide, and history entry points.
+    \item Upload page for walking TXT and standing TXT files.
+    \item Sensor-mapping controls for P1--P4.
+    \item Result page with risk cards and links to full reports.
+    \item Education center explaining each risk output.
+    \item History page storing recent analysis summaries locally.
+\end{itemize}
+
+\subsection*{Cloud Backend}
+The backend was deployed with WeChat Cloud Hosting using a Flask service. The Mini Program sends the TXT contents to:
+\[
+\texttt{POST /api/analyze-text}.
+\]
+The backend writes the text to temporary files, calls the Python analysis pipeline, and returns JSON containing the top result, summary metrics, risk cards, and report URLs.
+
+\subsection*{Important Debugging Events}
+\begin{enumerate}[leftmargin=*]
+    \item The initial cloud deployment failed because the ZIP package used Windows backslashes and included cache files. A clean ZIP with normal forward-slash paths was generated.
+    \item The Mini Program request error message was initially too generic. The front-end was modified to show the real error message and to fall back to direct HTTPS requests if \texttt{wx.cloud.callContainer} fails in developer tools.
+    \item A WXSS compile error occurred because \texttt{app.wxss} contained a UTF-8 BOM. The BOM was removed from the file.
+\end{enumerate}
+
+\subsection*{Verification}
+The cloud backend root endpoint returned a valid status response after deployment. The Mini Program can compile and can send uploaded TXT content to the backend. The UI was revised to improve presentation quality for the final demonstration.
+
+\subsection*{Next Step}
+Use the Mini Program and the web report side-by-side during the final presentation to show both technical traceability and user-facing usability.
+}
+
+\notebookentry
+{Final Presentation Assets and Demo Plan}
+{2026-05-23}
+{Prepare concise presentation material for the software-analysis portion and document the final demonstration workflow.}
+{
+\subsection*{Demo Workflow}
+\begin{center}
+\begin{tabular}{clp{0.56\linewidth}}
+\toprule
+\textbf{Step} & \textbf{Trial} & \textbf{Purpose} \\
+\midrule
+1 & Standing trial & Compute neutral $Pitch_0$ and $Roll_0$. \\
+2 & Normal walking & Verify stance segmentation and data quality. \\
+3 & Eversion trial & Check whether $PitchDelta$ exceeds the eversion/pronation threshold. \\
+4 & Inversion trial & Check whether $PitchDelta$ exceeds the inversion/supination threshold. \\
+5 & Forefoot landing & Check LandingAngle and early forefoot pressure evidence. \\
+6 & Rearfoot landing & Check LandingAngle and early heel pressure evidence. \\
+\bottomrule
+\end{tabular}
+\end{center}
+Each dynamic trial should ideally contain 10--20 valid stance phases. If fewer than three valid stance phases are detected, StepWise should not infer a posture tendency.
+
+\subsection*{Presentation Figures Prepared}
+\begin{itemize}[leftmargin=*]
+    \item Pipeline flowchart.
+    \item Core formulas and evidence-basis table.
+    \item Risk output logic table.
+    \item Requirement and verification table.
+\end{itemize}
+
+\subsection*{Figure for Notebook}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{presentation_assets/slide3_risk_output_logic_section5.png}
+\caption{Final presentation table summarizing risk outputs, evidence requirements, supporting evidence, and conservative behavior.}
+\label{fig:risklogic}
+\end{figure}
+
+\subsection*{Final Notes}
+The final software demonstration should emphasize that StepWise is explainable and conservative. It converts raw pressure/IMU data into readable screening feedback, but it does not replace clinical diagnosis. The strongest design decision is the use of standing calibration plus conservative rules to avoid unsupported posture conclusions.
+
+\subsection*{Remaining Limitations}
+\begin{itemize}[leftmargin=*]
+    \item Four pressure sensors provide only coarse pressure-location estimates.
+    \item CoP proxies are not equivalent to force-plate CoP.
+    \item Project thresholds are engineering screening thresholds.
+    \item A larger validation dataset would be required for clinical claims.
+\end{itemize}
+}
+
+\clearpage
+\section*{References}
+\begin{thebibliography}{9}
+
+\bibitem{opensense}
+OpenSim Documentation, ``OpenSense -- Kinematics with IMU Data.'' Available: \url{https://opensimconfluence.atlassian.net/wiki/spaces/OpenSim/pages/53084203/OpenSense%20-%20Kinematics%20with%20IMU%20Data}
+
+\bibitem{gaitmap}
+gaitmap Documentation, ``Coordinate Systems.'' Available: \url{https://gaitmap.readthedocs.io/en/latest/source/user_guide/coordinate_systems.html}
+
+\bibitem{falbriard2020}
+M. Falbriard et al., ``Drift-Free Foot Orientation Estimation in Running Using Wearable IMU,'' \textit{Frontiers in Bioengineering and Biotechnology}, 2020.
+
+\bibitem{sanchis2024}
+E. Sanchis-Sales et al., ``Foot kinematics and kinetics data for different static foot posture collected using a multi-segment foot model,'' \textit{Scientific Data}, 2024.
+
+\bibitem{ngueleu2019}
+A. M. Ngueleu et al., pressure-insole gait-event detection and plantar-pressure analysis, \textit{Sensors}, 2019.
+
+\end{thebibliography}
+
+\end{document}

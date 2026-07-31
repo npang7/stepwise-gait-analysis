@@ -1,0 +1,29 @@
+<view class="page">
+  <view class="hero light">
+    <view class="eyebrow">EVIDENCE NOTE</view>
+    <view class="title">{{item.title}}</view>
+    <view class="subtitle">{{item.summary}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">How StepWise Checks It</view>
+    <view class="small">{{item.explanation}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Metrics Used</view>
+    <block wx:for="{{item.metrics}}" wx:key="*this">
+      <view class="pill">{{item}}</view>
+    </block>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Reference Basis</view>
+    <view class="small">{{item.reference}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Recommended Next Step</view>
+    <view class="small">{{item.suggestion}}</view>
+  </view>
+</view>

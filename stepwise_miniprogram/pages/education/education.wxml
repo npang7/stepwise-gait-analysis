@@ -1,0 +1,20 @@
+<view class="page">
+  <view class="hero light">
+    <view class="eyebrow">LEARN THE RULES</view>
+    <view class="title">Education Center</view>
+    <view class="subtitle">Short explanations of what StepWise checks, which sensor features are used, and what the result means.</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Topics</view>
+    <block wx:for="{{items}}" wx:key="id">
+      <navigator class="nav-item tap" url="/pages/educationDetail/educationDetail?id={{item.id}}">
+        <view>
+          <view class="nav-main">{{item.title}}</view>
+          <text class="nav-sub">{{item.summary}}</text>
+        </view>
+        <text class="chevron">›</text>
+      </navigator>
+    </block>
+  </view>
+</view>

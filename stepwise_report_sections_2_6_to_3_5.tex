@@ -1,0 +1,375 @@
+% StepWise final report draft sections.
+% Intended use: paste Sections 2.6--2.10 into Chapter 2 (Design)
+% and Sections 3.3--3.5 into Chapter 3 (Verification).
+% Suggested packages in the main preamble: amsmath, array, url.
+
+\section{IMU and Orientation Sensing}
+\label{sec:imu_orientation}
+
+The inertial measurement unit (IMU) subsystem provides foot-mounted acceleration, angular-rate, and orientation estimates that complement the four plantar-pressure channels. The final prototype uses an MPU6050 six-axis IMU connected to the ESP32-S3 through the I2C bus. This device was selected because it integrates a three-axis accelerometer and a three-axis gyroscope in one low-cost package, has an Arduino-compatible software ecosystem, and supports a sampling rate higher than the project requirement of 50 Hz \cite{invensense_mpu6050}. In the final prototype, the IMU is sampled at 100 Hz together with the pressure sensors, so the orientation signal and pressure signal are recorded in the same data frame.
+
+The firmware configures the MPU6050 with an accelerometer range of $\pm 8g$, a gyroscope range of $\pm 500^\circ/\mathrm{s}$, and a digital low-pass bandwidth setting of 44 Hz. These settings are a compromise between dynamic range and noise reduction. The IMU is not used to diagnose a clinical gait condition directly. Instead, the pitch, roll, and yaw fields are used as engineering indicators of foot orientation during a standardized walking trial.
+
+For each sample, the accelerometer provides $a_x$, $a_y$, and $a_z$, while the gyroscope provides $\omega_x$, $\omega_y$, and $\omega_z$. The firmware first computes accelerometer-only pitch and roll estimates from the gravity vector:
+
+\begin{equation}
+\theta_{\mathrm{acc}} =
+\tan^{-1}\left(
+\frac{-a_x}{\sqrt{a_y^2+a_z^2}}
+\right)
+\label{eq:acc_pitch}
+\end{equation}
+
+\begin{equation}
+\phi_{\mathrm{acc}} =
+\tan^{-1}\left(
+\frac{a_y}{a_z}
+\right)
+\label{eq:acc_roll}
+\end{equation}
+
+where $\theta_{\mathrm{acc}}$ is the accelerometer pitch estimate and $\phi_{\mathrm{acc}}$ is the accelerometer roll estimate. The gyroscope is then integrated over the sample interval $\Delta t$:
+
+\begin{equation}
+\theta_{\mathrm{gyro}}[k] = \theta[k-1] + \omega_y[k]\Delta t
+\label{eq:gyro_pitch}
+\end{equation}
+
+\begin{equation}
+\phi_{\mathrm{gyro}}[k] = \phi[k-1] + \omega_x[k]\Delta t
+\label{eq:gyro_roll}
+\end{equation}
+
+The implemented complementary filter combines the short-term stability of the gyroscope with the long-term gravity reference from the accelerometer:
+
+\begin{equation}
+\theta[k] =
+\alpha\left(\theta[k-1]+\omega_y[k]\Delta t\right)
++(1-\alpha)\theta_{\mathrm{acc}}[k]
+\label{eq:comp_pitch}
+\end{equation}
+
+\begin{equation}
+\phi[k] =
+\alpha\left(\phi[k-1]+\omega_x[k]\Delta t\right)
++(1-\alpha)\phi_{\mathrm{acc}}[k]
+\label{eq:comp_roll}
+\end{equation}
+
+where $\alpha=0.96$ in the current firmware. The yaw estimate is obtained by integrating the $z$-axis gyroscope:
+
+\begin{equation}
+\psi[k] = \psi[k-1] + \omega_z[k]\Delta t
+\label{eq:yaw}
+\end{equation}
+
+This yaw estimate is treated as a relative trend only because the prototype does not include a magnetometer or an external heading reference. The roll estimate is more useful for StepWise because it is related to frontal-plane foot tilt. In the offline report, roll is interpreted only after static standing calibration or an obvious inversion/eversion calibration trial. This limitation is important because the sign of roll depends on how the IMU is mounted on the insole.
+
+\section{Embedded Firmware}
+\label{sec:embedded_firmware}
+
+The embedded firmware runs on the ESP32-S3-WROOM-1 module. The ESP32-S3 was selected because it provides sufficient general-purpose input/output pins, WiFi connectivity, I2C support, and enough processing margin for 100 Hz sensor acquisition \cite{espressif_s3_datasheet}. The firmware is written in the Arduino environment for rapid integration with the MPU6050 library and the ESP32 WiFi UDP stack.
+
+The firmware loop is organized around a fixed sample period. The design target is
+
+\begin{equation}
+T_s = \frac{1}{f_s} = \frac{1}{100~\mathrm{Hz}} = 10~\mathrm{ms}
+\label{eq:sample_period}
+\end{equation}
+
+where $T_s$ is the sample period and $f_s$ is the sampling frequency. A microsecond timer schedules each acquisition frame. During one frame, the firmware reads four analog pressure channels, reads one MPU6050 sample over I2C, computes pitch, roll, and yaw, and then sends the complete frame through WiFi UDP.
+
+The four pressure channels use ESP32 ADC pins as listed in Table \ref{tab:firmware_pins}. On startup, the firmware waits for a short no-load interval and records a no-pressure ADC baseline for each force-sensitive resistor (FSR). The pressure conversion is a first-order engineering approximation:
+
+\begin{equation}
+F_i =
+500
+\frac{A_{0,i}-A_i}{A_{0,i}}
+\label{eq:pressure_adc}
+\end{equation}
+
+where $F_i$ is the reported force for pressure channel $i$, $A_{0,i}$ is the no-pressure ADC baseline, and $A_i$ is the current ADC reading. Values below 1 N are suppressed as a dead zone, and values above 500 N are clipped. This conversion is not intended to replace a load-cell calibration curve; it provides a consistent engineering force scale for synchronization, visualization, and rule-based screening.
+
+\begin{table}[t]
+\centering
+\caption{Embedded sensor pin assignment in the final prototype.}
+\label{tab:firmware_pins}
+\begin{tabular}{|c|c|c|}
+\hline
+Signal & ESP32-S3 pin & Function \\
+\hline
+P1 & GPIO 12 & Heel pressure channel \\
+P2 & GPIO 13 & Arch/midfoot pressure channel \\
+P3 & GPIO 14 & Medial forefoot pressure channel \\
+P4 & GPIO 19 & Lateral forefoot pressure channel \\
+SDA & GPIO 4 & MPU6050 I2C data \\
+SCL & GPIO 5 & MPU6050 I2C clock \\
+\hline
+\end{tabular}
+\end{table}
+
+Table \ref{tab:firmware_pins} also reflects an important design update. The early project concept considered five pressure points, but the final prototype implements four pressure channels. The final software and report therefore use the four-channel mapping P1 = heel, P2 = arch/midfoot, P3 = medial forefoot, and P4 = lateral forefoot. This mapping is sufficient for detecting stance intervals, estimating front/rear and medial/lateral loading trends, and producing non-diagnostic feedback.
+
+\section{Wireless Data Link}
+\label{sec:wireless_link}
+
+StepWise uses WiFi UDP to transmit sensor frames from the ESP32-S3 to a host computer. UDP was selected because it has low protocol overhead, does not require a persistent connection, and fits the project's use case of a short diagnostic stream in a local network. RFC 768 defines UDP as a datagram protocol without guaranteed delivery or duplicate protection \cite{rfc768}; therefore, the PC software treats wireless communication as a best-effort data link and checks the received stream before analysis.
+
+Each transmitted sample contains 13 little-endian single-precision floating-point values:
+
+\begin{equation}
+\mathbf{x}[k] =
+\left[
+P_1,P_2,P_3,P_4,
+a_x,a_y,a_z,
+\omega_x,\omega_y,\omega_z,
+\theta,\phi,\psi
+\right]^T
+\label{eq:packet_vector}
+\end{equation}
+
+Because each value is a 4-byte float, the application payload per sample is
+
+\begin{equation}
+B_{\mathrm{payload}} = 13 \times 4 = 52~\mathrm{bytes}
+\label{eq:payload_size}
+\end{equation}
+
+At 100 Hz, the raw application payload rate is
+
+\begin{equation}
+R_{\mathrm{payload}} =
+52~\mathrm{bytes/sample}
+\times 8~\mathrm{bits/byte}
+\times 100~\mathrm{samples/s}
+= 41.6~\mathrm{kbps}
+\label{eq:payload_rate}
+\end{equation}
+
+This rate is small compared with the ESP32-S3 module's 802.11b/g/n capability \cite{espressif_s3_datasheet}. The selected wireless design therefore has adequate throughput margin. Its main risk is not capacity but packet loss, local network congestion, and timing uncertainty introduced by the host PC. For this reason, the final data file stores the PC receive time for each row, and the offline analysis estimates the effective sampling rate from the session duration rather than relying on every timestamp difference being exactly 10 ms.
+
+\section{PC GUI}
+\label{sec:pc_gui}
+
+The host-side graphical user interface (GUI) is a Tkinter application that receives the UDP stream, displays the sensor channels in real time, and saves each session to a text file for offline analysis. Figure \ref{fig:pc_gui} should show the final GUI screenshot, including the connection controls, pressure readouts, IMU readouts, and live plots. The GUI is part of the data integrity path rather than only a visualization tool, because it defines the stored TXT format that the offline analysis pipeline later parses.
+
+\begin{figure}[t]
+\centering
+% Replace this file name with the final screenshot path in the report project.
+\fbox{\parbox{0.86\linewidth}{\centering Placeholder for final PC GUI screenshot.}}
+\caption{PC GUI for UDP reception, live signal visualization, and session saving.}
+\label{fig:pc_gui}
+\end{figure}
+
+The GUI binds a UDP socket to port 5005 and processes received byte arrays in 52-byte increments. Each complete 52-byte segment is unpacked using the little-endian format \texttt{<13f}. Frames shorter than 52 bytes are ignored instead of being written as partial samples. For each valid frame, the GUI updates the pressure display, updates the IMU/orientation plots, and appends a structured record to the current session file.
+
+The saved TXT rows contain the sample index, PC receive time, four pressure values, three acceleration values, three gyroscope values, and three orientation angles. This format was chosen because it is readable during debugging and can be parsed with standard Python tools. The tradeoff is that PC receive timestamps have millisecond-level quantization and can repeat when multiple packets are processed within the same clock tick. The offline analysis therefore reports repeated timestamps as a recording limitation and estimates the effective sampling rate using the total number of samples and total session duration.
+
+\section{Offline Analysis Pipeline}
+\label{sec:offline_pipeline}
+
+The offline analysis pipeline converts a saved TXT session into a set of interpretable engineering features and a non-diagnostic user report. This rule-based design was selected instead of a black-box machine learning model because the current prototype has limited training data and must remain explainable for a senior design verification setting. Prior wearable gait studies support the use of pressure-sensor insoles and IMUs for gait event detection and gait feature extraction \cite{ngueleu_insole,muro_gait_wearable}. StepWise applies that idea to a four-channel prototype and reports loading-pattern candidates rather than clinical diagnoses.
+
+The pipeline first parses the TXT file and normalizes time so that the first valid sample has $t=0$. Then it smooths the four pressure channels with a short rolling median/mean filter. The total pressure is
+
+\begin{equation}
+P_{\mathrm{tot}}[k] = \sum_{i=1}^{4} P_i[k]
+\label{eq:total_pressure}
+\end{equation}
+
+The normalized regional ratios are
+
+\begin{equation}
+r_{\mathrm{rear}} = \frac{P_1}{P_{\mathrm{tot}}}, \quad
+r_{\mathrm{arch}} = \frac{P_2}{P_{\mathrm{tot}}}, \quad
+r_{\mathrm{front}} = \frac{P_3+P_4}{P_{\mathrm{tot}}}
+\label{eq:regional_ratios}
+\end{equation}
+
+\begin{equation}
+r_{\mathrm{medial}} = \frac{P_3}{P_{\mathrm{tot}}}, \quad
+r_{\mathrm{lateral}} = \frac{P_4}{P_{\mathrm{tot}}}
+\label{eq:ml_ratios}
+\end{equation}
+
+The pipeline also computes a coarse center-of-pressure (CoP) proxy using fixed normalized sensor coordinates:
+
+\begin{equation}
+x_{\mathrm{CoP}} =
+\frac{0.00P_1 + 0.45P_2 + 1.00P_3 + 1.00P_4}{P_{\mathrm{tot}}}
+\label{eq:cop_ap}
+\end{equation}
+
+\begin{equation}
+y_{\mathrm{CoP}} =
+\frac{0.45P_3 - 0.45P_4}{P_{\mathrm{tot}}}
+\label{eq:cop_ml}
+\end{equation}
+
+where $x_{\mathrm{CoP}}$ is an anterior-posterior proxy and $y_{\mathrm{CoP}}$ is a medial-lateral proxy. Positive $y_{\mathrm{CoP}}$ indicates more medial forefoot loading, and negative $y_{\mathrm{CoP}}$ indicates more lateral forefoot loading. Because StepWise has only four pressure points, Equations \eqref{eq:cop_ap} and \eqref{eq:cop_ml} are described as coarse proxies, not pressure-platform CoP measurements.
+
+Foot contact is detected using an adaptive threshold with hysteresis:
+
+\begin{equation}
+T_{\mathrm{on}} =
+\max\left(T_{\min},\beta\max_k P_{\mathrm{tot}}[k]\right)
+\label{eq:contact_on}
+\end{equation}
+
+\begin{equation}
+T_{\mathrm{off}} = 0.55T_{\mathrm{on}}
+\label{eq:contact_off}
+\end{equation}
+
+where $T_{\min}=5$ N and $\beta=0.08$ in the current analysis script. A stance phase starts when $P_{\mathrm{tot}}$ rises above $T_{\mathrm{on}}$ and ends when it falls below $T_{\mathrm{off}}$. This hysteresis reduces false transitions caused by sensor noise near the threshold.
+
+For each detected stance phase, the pipeline extracts stance time, same-foot stride time, pressure impulse, peak pressure, mean pressure, early-stance ratios, late-stance push-off proxy, roll range, acceleration magnitude, and gyroscope magnitude. The same-foot stride timing variability is summarized with
+
+\begin{equation}
+\mathrm{CV}_{\mathrm{stride}} =
+\frac{\sigma(T_{\mathrm{stride}})}
+{\mu(T_{\mathrm{stride}})}
+\label{eq:stride_cv}
+\end{equation}
+
+The user-facing report groups the results into data confidence, gait rhythm, landing mode, pressure transfer, regional loading distribution, and retest suggestions. When public foot-posture references are used, StepWise treats pronation/eversion and supination/inversion as loading-pattern risks. Public datasets based on the Foot Posture Index show that static foot posture can be related to different pressure and kinematic patterns during walking \cite{sanchis_foot_dataset,redmond_fpi}. StepWise uses these sources to justify the direction of the screening logic, but it does not claim to diagnose pronation, supination, flat foot, toe-in, or toe-out.
+
+\section{IMU Verification}
+\label{sec:imu_verification}
+
+The IMU requirement is that static inversion/eversion angle error should be within $\pm 2^\circ$, slow-tilt angle error should be within $\pm 3^\circ$, and IMU output should be available at no less than 50 Hz during normal operation. The verification procedure uses two tests. First, the insole is placed on a flat table and then tilted to known static angles using a fixture or an inclinometer reference. Second, the insole is slowly tilted by hand through a small range while the output is recorded, so that the complementary filter can be checked under low-dynamic motion.
+
+For a fixed-angle test with reference angle $\phi_{\mathrm{ref}}$ and measured roll angle $\phi_{\mathrm{meas}}$, the absolute error is
+
+\begin{equation}
+e_\phi = |\phi_{\mathrm{meas}}-\phi_{\mathrm{ref}}|
+\label{eq:roll_error}
+\end{equation}
+
+For $n$ repeated trials, the mean absolute error is
+
+\begin{equation}
+\bar{e}_\phi =
+\frac{1}{n}\sum_{j=1}^{n}
+|\phi_{\mathrm{meas},j}-\phi_{\mathrm{ref},j}|
+\label{eq:mean_roll_error}
+\end{equation}
+
+Table \ref{tab:imu_verification} summarizes the intended verification record. The angle rows should be filled with final measured values after the team completes the fixture-based test. This is preferable to estimating clinical meaning from walking data alone, because walking trials combine foot motion, sensor placement, and user behavior.
+
+\begin{table}[t]
+\centering
+\caption{IMU verification summary.}
+\label{tab:imu_verification}
+\begin{tabular}{|p{0.25\linewidth}|p{0.24\linewidth}|p{0.22\linewidth}|p{0.16\linewidth}|}
+\hline
+Requirement & Test method & Result & Status \\
+\hline
+Static angle error within $\pm 2^\circ$ & Place insole at known roll angles and compute Equation \eqref{eq:roll_error}. & Remaining data needed. & To be verified \\
+\hline
+Slow-tilt error within $\pm 3^\circ$ & Tilt the insole slowly against an inclinometer reference. & Remaining data needed. & To be verified \\
+\hline
+IMU output at no less than 50 Hz & Record a walking stream and estimate sample rate from session duration. & Representative session: 1682 samples in 16.822 s, or 99.93 Hz. & Verified preliminarily \\
+\hline
+\end{tabular}
+\end{table}
+
+The representative walking session satisfies the output-rate part of the IMU requirement. The fixed-angle and slow-tilt accuracy rows remain important because the current walking data alone cannot separate true foot tilt from mounting direction and user motion. This is also why the user report treats roll-based inversion/eversion feedback as a screening indicator that should be calibrated by static standing or known-direction tilt trials.
+
+\section{Embedded Sampling and Wireless Verification}
+\label{sec:embedded_wireless_verification}
+
+The embedded sampling requirement is that all pressure and IMU fields should be acquired and transmitted at a rate of at least 50 Hz. The current firmware target is 100 Hz, corresponding to the 10 ms period in Equation \eqref{eq:sample_period}. For a received file with $N$ valid samples and duration $T$, the measured session-level sampling rate is
+
+\begin{equation}
+\hat{f}_s = \frac{N-1}{T}
+\label{eq:estimated_fs}
+\end{equation}
+
+In a representative trial, the PC saved 1682 samples over 16.822 s. Equation \eqref{eq:estimated_fs} gives $\hat{f}_s=99.93$ Hz, which exceeds both the 50 Hz requirement and the 100 Hz target within normal timing tolerance. The same analysis detected 12 single-foot stance phases and classified the data quality as High.
+
+The wireless requirement is that the UDP link should support the full sensor stream without channel-level dropout longer than 1 s and with packet loss no greater than 5\% per session. Since each transmitted packet contains 52 bytes of application payload, Equation \eqref{eq:payload_rate} gives a raw payload rate of 41.6 kbps. This rate is much lower than the practical WiFi data rate supported by the ESP32-S3 module, so the throughput requirement has adequate design margin.
+
+Packet loss should be measured in a 60 s line-of-sight test at approximately 3 m. If the expected sample count is $N_{\mathrm{exp}}=f_sT$ and the received count is $N_{\mathrm{rx}}$, the loss estimate is
+
+\begin{equation}
+L =
+1-\frac{N_{\mathrm{rx}}}{N_{\mathrm{exp}}}
+\label{eq:packet_loss}
+\end{equation}
+
+Table \ref{tab:embedded_wireless_verification} records the current status. The sample-rate row is supported by collected data. The final packet-loss row should be completed with a controlled 60 s test because normal walking files do not by themselves prove that missing samples were caused by wireless loss rather than session start/stop timing.
+
+\begin{table}[t]
+\centering
+\caption{Embedded sampling and wireless verification summary.}
+\label{tab:embedded_wireless_verification}
+\begin{tabular}{|p{0.25\linewidth}|p{0.25\linewidth}|p{0.22\linewidth}|p{0.15\linewidth}|}
+\hline
+Requirement & Test method & Result & Status \\
+\hline
+Sampling rate at least 50 Hz & Estimate $\hat{f}_s$ using Equation \eqref{eq:estimated_fs}. & 99.93 Hz in a representative walking file. & Verified \\
+\hline
+Payload fits wireless link & Compute raw application payload rate. & 41.6 kbps at 100 Hz. & Verified by design \\
+\hline
+No pressure or IMU field omitted & Confirm each received valid packet unpacks into 13 floats. & TXT and CSV files contain P1--P4, AccX--AccZ, GyrX--GyrZ, Pitch, Roll, and Yaw. & Verified preliminarily \\
+\hline
+Packet loss below 5\% at 3 m for 60 s & Use Equation \eqref{eq:packet_loss} on a diagnostic stream. & Remaining data needed. & To be verified \\
+\hline
+\end{tabular}
+\end{table}
+
+The main limitation found in the current data is repeated PC receive timestamps. One representative file contains 683 repeated millisecond timestamps, even though the session-level rate is close to 100 Hz. This does not prove that the embedded sampler failed; rather, it reflects the current GUI design, which timestamps packets on the PC side. A future firmware revision should add an embedded sample counter or embedded timestamp to each UDP frame so that packet loss and inter-sample jitter can be separated more cleanly.
+
+\section{PC Software and Offline Analysis Verification}
+\label{sec:pc_software_verification}
+
+The PC software requirement is that valid UDP frames should be parsed and saved reliably, incomplete or corrupted sessions should not be reported as valid gait results, and the offline analysis should produce interpretable screening outputs from stored TXT files. The verification therefore covers three parts: UDP frame parsing, file-format compatibility, and offline feature extraction.
+
+For parsing, each UDP datagram is processed in 52-byte blocks. The number of valid frames in a datagram is
+
+\begin{equation}
+N_{\mathrm{valid}} =
+\left\lfloor
+\frac{B_{\mathrm{datagram}}}{52}
+\right\rfloor
+\label{eq:valid_frames}
+\end{equation}
+
+where $B_{\mathrm{datagram}}$ is the datagram length in bytes. Any remaining bytes are ignored because they do not form a complete \texttt{<13f>} frame. The parsing success rate for a test set is
+
+\begin{equation}
+S_{\mathrm{parse}} =
+\frac{N_{\mathrm{valid}}}{N_{\mathrm{total}}}
+\times 100\%
+\label{eq:parse_success}
+\end{equation}
+
+where $N_{\mathrm{total}}$ is the number of test frames supplied to the parser. The final verification target is at least 95\% parsing success on valid transmitted frames, while malformed frames should be rejected or omitted rather than converted into misleading gait features.
+
+For offline analysis, a representative saved session was parsed successfully. The pipeline produced processed CSV data, step-level features, JSON summaries, pressure and orientation plots, an HTML report, and a user-facing non-diagnostic report. The representative session contained 1682 samples, lasted 16.822 s, had an estimated sampling rate of 99.93 Hz, and yielded 12 detected single-foot stance phases. These outputs demonstrate that the analysis pipeline can convert the GUI text file into the required report artifacts.
+
+The screening logic was verified qualitatively with labeled demonstration files, including normal-like walking, forefoot landing, rearfoot landing, and medial/lateral loading patterns. The software intentionally reports ``loading-pattern candidate'' or ``posture-risk tendency'' rather than a clinical diagnosis. This wording is consistent with the hardware resolution: four pressure points and one foot-mounted IMU can support engineering screening, but they cannot replace a clinical gait lab, a pressure platform, or a trained foot-posture examination.
+
+\begin{table}[t]
+\centering
+\caption{PC software and offline analysis verification summary.}
+\label{tab:pc_verification}
+\begin{tabular}{|p{0.25\linewidth}|p{0.25\linewidth}|p{0.22\linewidth}|p{0.15\linewidth}|}
+\hline
+Requirement & Test method & Result & Status \\
+\hline
+Parse at least 95\% of valid frames & Apply Equation \eqref{eq:parse_success} to valid UDP test streams. & Remaining data needed for a formal parser stress test. & To be verified \\
+\hline
+Reject incomplete frames & Send or load byte strings not divisible by 52. & GUI processes only complete 52-byte frames. & Verified by code inspection \\
+\hline
+Save complete session files & Record a walking session and inspect TXT/CSV outputs. & Required 13 sensor fields are present in the saved rows. & Verified preliminarily \\
+\hline
+Generate offline reports & Run the saved TXT through the analysis script. & CSV, JSON, PNG, TXT, and HTML outputs generated. & Verified \\
+\hline
+Avoid clinical diagnostic claims & Review user-facing report wording. & Report uses engineering screening and retest language. & Verified by review \\
+\hline
+\end{tabular}
+\end{table}
+
+Table \ref{tab:pc_verification} also identifies the remaining software verification work. Before final submission, the team should run a small parser test set containing valid packets, truncated packets, packets with extra trailing bytes, and empty sessions. The expected behavior is conservative: valid packets should be accepted, while invalid sessions should be flagged as unusable rather than assigned a gait-risk result.

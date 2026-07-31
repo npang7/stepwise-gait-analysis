@@ -1,0 +1,19 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/upload/upload",
+    "pages/result/result",
+    "pages/education/education",
+    "pages/educationDetail/educationDetail",
+    "pages/history/history",
+    "pages/guide/guide"
+  ],
+  "window": {
+    "navigationBarTitleText": "StepWise",
+    "navigationBarBackgroundColor": "#0f2f3f",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#eef3f7"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

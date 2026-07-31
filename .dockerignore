@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+tests
+stepwise_miniprogram
+miniapp_uploads
+miniapp_reports
+stepwise_*_reports
+stepwise_20*
+stepwise_reference_experiment*
+tmp*
+*.zip
+*.pdf
+*.docx

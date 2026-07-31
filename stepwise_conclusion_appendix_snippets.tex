@@ -1,0 +1,211 @@
+% StepWise final-report snippets for Chapter 5, Appendix A, and Appendix C.
+% Paste the first block into Chapter 5 Conclusion.
+% Paste Appendix A rows into the Requirement and Verification appendix table.
+% Paste Appendix C sections into the data-format / implementation appendix.
+
+% =========================
+% Chapter 5: Conclusion software portion
+% =========================
+
+\subsection{Software and Data-Pipeline Contribution}
+\label{sec:software_conclusion}
+
+The software portion of StepWise completed the end-to-end data path from embedded sensing to user-readable reports. The ESP32-S3 firmware samples four pressure channels and one IMU at a 100 Hz target rate, packages each sample into a fixed 13-float UDP frame, and transmits the data to the PC. The PC acquisition program receives the stream, displays pressure and IMU signals in real time, and saves each session in a structured TXT format. The offline analysis pipeline then parses the saved file, extracts stance phases and pressure-ratio features, and generates CSV, JSON, plot, technical-report, and user-report outputs.
+
+The representative walking session showed that the implemented software path is functional: 1682 samples were saved over 16.822 s, corresponding to an effective rate of 99.93 Hz, and the offline pipeline detected 12 single-foot stance phases. The final reports use non-diagnostic language, such as ``loading-pattern candidate'' and ``posture-risk tendency,'' which is appropriate for a four-pressure-point prototype.
+
+The main software limitation is timestamp precision. The current TXT files use PC receive time rather than an embedded sample counter or embedded timestamp, so repeated millisecond timestamps can occur even when the session-level sample rate is close to 100 Hz. Future work should add an embedded sample index to each UDP frame, improve packet-loss measurement, and expand the validation set with more controlled walking patterns.
+
+% =========================
+% Appendix A: R&V rows for IMU / embedded / wireless / PC software
+% =========================
+
+\section{Requirement and Verification Rows for IMU, Embedded Firmware, Wireless Link, and PC Software}
+\label{app:rv_software_rows}
+
+Table \ref{tab:rv_software_rows} lists the requirement-and-verification rows related to the IMU, embedded sampling, wireless communication, and PC-side software. These rows supplement the main verification discussion in Chapter 3.
+
+\begin{table}[p]
+\centering
+\caption{R\&V rows for IMU, embedded timing, wireless communication, and PC software.}
+\label{tab:rv_software_rows}
+\begin{tabular}{|p{0.20\linewidth}|p{0.27\linewidth}|p{0.29\linewidth}|p{0.14\linewidth}|}
+\hline
+\textbf{Subsystem} & \textbf{Requirement} & \textbf{Verification and Result} & \textbf{Status} \\
+\hline
+IMU and orientation sensing
+& IMU data shall be acquired at no less than 50 Hz during walking trials.
+& A representative saved session contained 1682 frames over 16.822 s, giving an effective rate of 99.93 Hz. The saved rows included AccX--AccZ, GyrX--GyrZ, Pitch, Roll, and Yaw.
+& Verified \\
+\hline
+IMU and orientation sensing
+& Roll and pitch estimates shall be suitable for engineering orientation screening after static or known-direction calibration.
+& The firmware computes pitch and roll using accelerometer estimates and gyroscope integration through a complementary filter. Walking data confirmed continuous orientation output; absolute clinical angle accuracy was not claimed.
+& Verified with limitation \\
+\hline
+Embedded sampling
+& The firmware shall sample four pressure channels and one IMU in a 100 Hz acquisition loop.
+& The firmware uses a 10 ms timer period. The representative session rate of 99.93 Hz supports that the embedded-to-PC path meets the timing target at the saved-file level.
+& Verified \\
+\hline
+Embedded data fields
+& Each transmitted sample shall contain P1--P4, AccX--AccZ, GyrX--GyrZ, Pitch, Roll, and Yaw.
+& The PC parser unpacks each valid UDP frame as 13 little-endian floats. Saved TXT and CSV outputs contain all 13 fields.
+& Verified \\
+\hline
+Wireless communication
+& The wireless payload rate shall fit within the ESP32-S3 WiFi link.
+& The application payload is 52 bytes/sample. At 100 Hz, the raw payload rate is 41.6 kbps, which is well below practical WiFi throughput.
+& Verified by design \\
+\hline
+Wireless communication
+& The saved session shall show no channel-level dropout longer than 1 s.
+& The representative saved file contained all 13 fields across the session, with no observed channel dropout longer than 1 s.
+& Verified with limitation \\
+\hline
+PC acquisition
+& The GUI shall receive and save valid UDP frames without converting incomplete frames into valid samples.
+& The GUI processes data in 52-byte blocks using the \texttt{<13f>} format. Incomplete trailing bytes are ignored rather than saved as samples.
+& Verified by code inspection \\
+\hline
+Offline analysis
+& The analysis script shall convert a saved TXT session into structured output files and a non-diagnostic report.
+& The representative session generated processed CSV data, step-level features, JSON summaries, PNG plots, a technical HTML report, and a user-facing report.
+& Verified \\
+\hline
+Report safety
+& User-facing outputs shall not claim clinical diagnosis.
+& Report wording uses engineering screening terms such as ``loading-pattern candidate,'' ``posture-risk tendency,'' and retest suggestions.
+& Verified by review \\
+\hline
+\end{tabular}
+\end{table}
+
+% =========================
+% Appendix C: UDP packet format, embedded fields, sampling notes,
+% TXT/CSV format, analysis outputs, timestamp limitation
+% =========================
+
+\section{Data Format and Software Output Details}
+\label{app:data_format}
+
+\subsection{UDP Packet Format and Embedded Fields}
+\label{app:udp_packet_format}
+
+The final embedded prototype transmits real-time data using WiFi UDP on port 5005. Each sample is encoded as 13 little-endian 32-bit floating-point values, for a total payload size of 52 bytes. The PC program unpacks each frame using the Python format string \texttt{<13f}. Table \ref{tab:udp_packet_format} lists the transmitted fields.
+
+\begin{table}[h]
+\centering
+\caption{UDP packet format for one StepWise sample.}
+\label{tab:udp_packet_format}
+\begin{tabular}{|c|c|c|p{0.38\linewidth}|}
+\hline
+\textbf{Index} & \textbf{Field} & \textbf{Unit} & \textbf{Description} \\
+\hline
+0 & P1 & N & Heel pressure channel \\
+1 & P2 & N & Arch/midfoot pressure channel \\
+2 & P3 & N & Medial forefoot pressure channel \\
+3 & P4 & N & Lateral forefoot pressure channel \\
+4--6 & AccX, AccY, AccZ & m/s$^2$ & IMU acceleration axes \\
+7--9 & GyrX, GyrY, GyrZ & rad/s & IMU gyroscope axes \\
+10 & Pitch & deg & Complementary-filter pitch estimate \\
+11 & Roll & deg & Complementary-filter roll estimate \\
+12 & Yaw & deg & Relative yaw estimate from gyro integration \\
+\hline
+\end{tabular}
+\end{table}
+
+The application payload rate is
+
+\begin{equation}
+52~\mathrm{bytes/sample}\times 8~\mathrm{bits/byte}\times 100~\mathrm{samples/s}
+=41.6~\mathrm{kbps}
+\label{eq:app_payload_appendix}
+\end{equation}
+
+This calculation excludes UDP/IP and 802.11 overhead, but it is sufficient to show that the sensor stream is small relative to the available WiFi bandwidth.
+
+\subsection{Embedded Sampling Notes}
+\label{app:sampling_notes}
+
+The firmware targets a 100 Hz sampling rate, corresponding to a 10 ms frame period. During each frame, it reads the four analog pressure channels, reads one MPU6050 sample over I2C, computes pitch, roll, and yaw, and transmits the 13-field UDP frame. The current firmware also includes a batch-send buffer, but the final operating mode used for testing is real-time UDP transmission of one sample frame at a time.
+
+Pressure values are generated from a startup no-load ADC baseline. This conversion provides an engineering force scale for visualization and feature extraction. It is not a clinical-grade pressure calibration curve. The pressure-channel placement used by the final analysis is P1 = heel, P2 = arch/midfoot, P3 = medial forefoot, and P4 = lateral forefoot.
+
+\subsection{TXT and CSV Session Format}
+\label{app:txt_csv_format}
+
+The PC acquisition GUI saves a human-readable TXT file during each session. Each data row contains the fields listed in Table \ref{tab:txt_csv_format}. The CSV export uses the same sensor fields in comma-separated form.
+
+\begin{table}[h]
+\centering
+\caption{Saved TXT/CSV session fields.}
+\label{tab:txt_csv_format}
+\begin{tabular}{|p{0.22\linewidth}|p{0.18\linewidth}|p{0.46\linewidth}|}
+\hline
+\textbf{Field group} & \textbf{Fields} & \textbf{Use in offline analysis} \\
+\hline
+Sample metadata & Sample, SystemTime & Row indexing and time normalization \\
+\hline
+Pressure & P1, P2, P3, P4 & Contact detection, regional loading ratios, CoP proxy, pressure plots \\
+\hline
+Acceleration & AccX, AccY, AccZ & Motion-intensity plots and acceleration magnitude \\
+\hline
+Gyroscope & GyrX, GyrY, GyrZ & Angular-rate plots and gyroscope magnitude \\
+\hline
+Orientation & Pitch, Roll, Yaw & Foot-orientation trends and roll-range screening features \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Offline Analysis Outputs}
+\label{app:analysis_outputs}
+
+The offline pipeline reads the saved TXT file and writes the output files listed in Table \ref{tab:analysis_outputs}. These files separate machine-readable data, visual inspection plots, and user-facing report content.
+
+\begin{table}[h]
+\centering
+\caption{Offline analysis outputs generated from a saved StepWise session.}
+\label{tab:analysis_outputs}
+\begin{tabular}{|p{0.30\linewidth}|p{0.52\linewidth}|}
+\hline
+\textbf{Output file} & \textbf{Purpose} \\
+\hline
+\texttt{processed\_gait\_data.csv} & Smoothed pressure channels, time-normalized samples, contact state, ratios, and CoP proxies \\
+\hline
+\texttt{gait\_steps\_analysis.csv} & Step-level stance time, stride time, pressure impulse, regional ratios, roll range, and pattern labels \\
+\hline
+\texttt{session\_summary.json} & Sample count, duration, estimated sampling rate, detected stance phases, thresholds, and warnings \\
+\hline
+\texttt{screening\_findings.csv/json} & Engineering screening findings and interpretation text \\
+\hline
+\texttt{risk\_flags.csv/json} & Grouped risk flags for data confidence, rhythm, landing, pressure transfer, and regional loading \\
+\hline
+\texttt{pressure\_stance.png} & Pressure traces with detected stance intervals shaded \\
+\hline
+\texttt{acceleration.png} & Acceleration channels and acceleration magnitude \\
+\hline
+\texttt{orientation.png} & Pitch, roll, and yaw traces \\
+\hline
+\texttt{report.html} and \texttt{report.txt} & Technical analysis report \\
+\hline
+\texttt{user\_report.html} & User-facing non-diagnostic screening report \\
+\hline
+\texttt{data\_guide.html} & Explanation of formulas, sensor mapping, and interpretation limits \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Timestamp Limitation}
+\label{app:timestamp_limitation}
+
+The current GUI assigns timestamps using the PC receive time. This design is simple and useful for debugging, but it has limited precision. Several packets can be processed within the same millisecond, so repeated timestamps can appear in the saved TXT file. In the representative session, the analysis reported 683 repeated timestamps while the session-level sampling rate remained 99.93 Hz.
+
+For this reason, the offline analysis estimates the effective sampling rate from total sample count and total session duration:
+
+\begin{equation}
+\hat{f}_s=\frac{N-1}{t_{\mathrm{last}}-t_{\mathrm{first}}}
+\label{eq:fs_appendix}
+\end{equation}
+
+The repeated-timestamp warning should be interpreted as a data-recording limitation rather than proof that the embedded sampler or sensor stream failed. A future firmware revision should add an embedded sample counter or embedded timestamp to each UDP frame. That change would allow the PC program to distinguish wireless packet loss, sampling jitter, and PC timestamp quantization more accurately.

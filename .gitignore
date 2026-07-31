@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# User-specific configuration and uploaded recordings
+stepwise_miniprogram/project.private.config.json
+miniapp_uploads/
+
+# Generated reports, exports, and previews
+miniapp_reports/
+stepwise_output/
+stepwise_newdata_output/
+stepwise_cli_reports/
+stepwise_batch_reports/
+stepwise_new_mapping_reports/
+stepwise_20*/
+stepwise_reference_experiment*/
+stepwise_report_polished_preview/
+stepwise_multi_command_test/
+experiment2_report/
+tmp*/
+presentation_assets/
+*.pdf
+*.zip
+*.docx
+miniapp_test_result*.html
