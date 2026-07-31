@@ -94,6 +94,32 @@ class ApiTests(unittest.TestCase):
         finally:
             manager.close()
 
+    def test_real_pipeline_runs_through_multipart_worker_and_artifact_download(self) -> None:
+        manager = JobManager(
+            self.data_dir,
+            max_workers=1,
+            max_queue=1,
+            timeout_seconds=20,
+        )
+        try:
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                created = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                ).json()
+                terminal = wait_for_api_terminal(client, created["status_url"], timeout=20)
+                self.assertEqual(terminal["status"], "succeeded")
+                result = client.get(created["result_url"]).json()
+                self.assertEqual(result["summary"]["samples"], 20)
+                self.assertEqual(len(result["artifacts"]), 12)
+                report = client.get(
+                    f"/api/v1/analyses/{created['run_id']}/artifacts/user_report.html"
+                )
+                self.assertEqual(report.status_code, 200)
+                self.assertIn("StepWise gait screening report", report.text)
+        finally:
+            manager.close()
+
     def test_result_is_409_until_job_is_ready_and_unknown_job_is_404(self) -> None:
         manager = JobManager(
             self.data_dir,

@@ -6,13 +6,14 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from stepwise.jobs import JobManager, QueueFullError
-from stepwise.models import AnalysisConfig
+from stepwise.models import AnalysisConfig, JobManifest
 from stepwise.storage import JobRepository
 
 FIXTURE_BYTES = (ROOT / "tests" / "fixtures" / "minimal_walk.txt").read_bytes()
@@ -146,6 +147,33 @@ class JobManagerTests(unittest.TestCase):
                 manager.submit(FIXTURE_BYTES, None, AnalysisConfig())
             with self.assertRaisesRegex(ValueError, "binary_input"):
                 manager.submit(b"\x00\x01", None, AnalysisConfig())
+        finally:
+            manager.close()
+
+    def test_submit_cleans_expired_terminal_results(self) -> None:
+        manager = JobManager(
+            self.root,
+            max_workers=1,
+            max_queue=1,
+            timeout_seconds=3,
+            result_ttl_hours=24,
+            runner=successful_runner,
+        )
+        try:
+            expired = manager.repository.create()
+            old = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+            manager.repository.save(
+                JobManifest(
+                    run_id=expired.run_id,
+                    status="failed",
+                    created_at=old,
+                    updated_at=old,
+                    error_code="test",
+                    error_message="expired",
+                )
+            )
+            manager.submit(FIXTURE_BYTES, None, AnalysisConfig())
+            self.assertFalse((self.root / expired.run_id).exists())
         finally:
             manager.close()
 

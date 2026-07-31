@@ -63,8 +63,11 @@ def _worker_entry(
         result_queue.put(("succeeded", runner(root, run_id, config_payload)))
     except InputValidationError as exc:
         result_queue.put(("failed", {"code": exc.code, "message": str(exc)}))
-    except Exception:
-        LOGGER.exception("analysis worker failed", extra={"run_id": run_id})
+    except Exception as exc:  # noqa: BLE001 -- worker boundary returns a stable error model.
+        LOGGER.error(
+            "analysis_worker_failed",
+            extra={"run_id": run_id, "error_type": type(exc).__name__},
+        )
         result_queue.put(
             (
                 "failed",
@@ -100,6 +103,7 @@ class JobManager:
         self.max_workers = max_workers
         self.timeout_seconds = timeout_seconds
         self.max_upload_bytes = max_upload_bytes
+        self.result_ttl_hours = result_ttl_hours
         self.runner = runner
         self._context = multiprocessing.get_context("spawn")
         self._pending: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=max_queue)
@@ -140,6 +144,7 @@ class JobManager:
         self._validate_upload(walking)
         if standing is not None:
             self._validate_upload(standing)
+        self.repository.cleanup_expired(self.result_ttl_hours)
         manifest = self.repository.create()
         self.repository.write_input(manifest.run_id, "walking.txt", walking)
         if standing is not None:
