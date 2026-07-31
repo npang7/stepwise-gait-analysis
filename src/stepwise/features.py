@@ -115,12 +115,12 @@ def summarize_session(
     else:
         quality = "High"
     return {
-        "samples": int(len(frame)),
+        "samples": len(frame),
         "duration_s": duration,
         "estimated_sample_rate_hz": sample_rate,
         "median_positive_dt_s": median_positive_delta,
         "duplicate_timestamp_count": duplicate_count,
-        "detected_steps_single_foot": int(len(steps)),
+        "detected_steps_single_foot": len(steps),
         "estimated_single_foot_cadence_per_min": cadence,
         "contact_enter_threshold_n": enter_threshold,
         "contact_exit_threshold_n": exit_threshold,

@@ -12,7 +12,6 @@ from typing import Any
 
 from .models import RiskCard
 
-
 FRONTAL_TILT_THRESHOLD_DEG = 5.0
 STRONG_FRONTAL_TILT_DEG = 8.0
 ML_RATIO_MARGIN_THRESHOLD = 0.06
@@ -32,6 +31,8 @@ def _finite(value: Any) -> bool:
 
 def _number(metrics: dict[str, Any], key: str) -> float:
     value = metrics.get(key)
+    if value is None:
+        return math.nan
     return float(value) if _finite(value) else math.nan
 
 

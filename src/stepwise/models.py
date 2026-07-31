@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass, field
 from numbers import Real
 from typing import Any, Literal
 
-
 CHANNELS = frozenset({"P1", "P2", "P3", "P4"})
 
 
@@ -117,4 +116,43 @@ class AnalysisResult:
                 "risk_cards": [card.to_dict() for card in self.risk_cards],
                 "artifacts": [artifact.to_dict() for artifact in self.artifacts],
             }
+        )
+
+
+JobStatus = Literal["queued", "running", "succeeded", "failed"]
+
+
+@dataclass(frozen=True)
+class JobManifest:
+    run_id: str
+    status: JobStatus
+    created_at: str
+    updated_at: str
+    result: dict[str, Any] | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"queued", "running", "succeeded", "failed"}:
+            raise ValueError("invalid job status")
+        if self.status == "succeeded" and self.result is None:
+            raise ValueError("succeeded jobs require a result")
+        if self.status == "failed" and not self.error_code:
+            raise ValueError("failed jobs require an error code")
+        if self.result is not None:
+            object.__setattr__(self, "result", strict_json_value(self.result))
+
+    def to_dict(self) -> dict[str, Any]:
+        return strict_json_value(asdict(self))
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> JobManifest:
+        return cls(
+            run_id=str(payload["run_id"]),
+            status=payload["status"],
+            created_at=str(payload["created_at"]),
+            updated_at=str(payload["updated_at"]),
+            result=payload.get("result"),
+            error_code=payload.get("error_code"),
+            error_message=payload.get("error_message"),
         )

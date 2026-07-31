@@ -7,21 +7,27 @@ from pathlib import Path
 
 import numpy as np
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from stepwise.features import compute_session_metrics, extract_stance_features, summarize_session  # noqa: E402
-from stepwise.models import AnalysisConfig, SensorMapping  # noqa: E402
-from stepwise.parsing import InputValidationError, parse_stepwise_bytes, parse_stepwise_txt  # noqa: E402
-from stepwise.signal import (  # noqa: E402
+from stepwise.features import (
+    compute_session_metrics,
+    extract_stance_features,
+    summarize_session,
+)
+from stepwise.models import AnalysisConfig, SensorMapping
+from stepwise.parsing import (
+    InputValidationError,
+    parse_stepwise_bytes,
+    parse_stepwise_txt,
+)
+from stepwise.signal import (
     adaptive_threshold,
     build_basic_features,
     contact_intervals,
     hysteresis_contact,
     rolling_smooth,
 )
-
 
 FIXTURE = ROOT / "tests" / "fixtures" / "minimal_walk.txt"
 

@@ -5,17 +5,17 @@ from __future__ import annotations
 import csv
 import html
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import pandas as pd  # noqa: E402
+import matplotlib.pyplot as plt
+import pandas as pd
 
 from .models import Artifact, RiskCard, strict_json_value
-
 
 ARTIFACT_MEDIA_TYPES = {
     ".csv": "text/csv",
@@ -169,10 +169,10 @@ four pressure channels, accelerometer, gyroscope, and orientation values.</p>
     with (output_dir / "reference_metric_comparison.csv").open(
         "w", encoding="utf-8", newline=""
     ) as handle:
-        writer = csv.writer(handle)
-        writer.writerow(("metric", "value"))
+        metric_writer = csv.writer(handle)
+        metric_writer.writerow(("metric", "value"))
         for key, value in strict_json_value(metrics).items():
-            writer.writerow((key, value))
+            metric_writer.writerow((key, value))
 
     artifacts: list[Artifact] = []
     for path in sorted(output_dir.iterdir(), key=lambda item: item.name):

@@ -5,11 +5,10 @@ import sys
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from stepwise.screening import build_risk_cards  # noqa: E402
+from stepwise.screening import build_risk_cards
 
 
 def neutral_metrics() -> dict[str, float]:
