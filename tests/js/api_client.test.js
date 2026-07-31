@@ -73,7 +73,7 @@ test('client uploads, polls, fetches, and normalizes a successful result', async
   assert.equal(result.top_level, 'High')
   assert.equal(result.cards.length, 1)
   assert.equal(
-    result.urls.user_report_html,
+    result.urls.user_report,
     'https://stepwise.test/api/v1/analyses/run-1/artifacts/user_report.html'
   )
 })

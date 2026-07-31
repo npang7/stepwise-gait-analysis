@@ -49,7 +49,8 @@ function apiError(response, fallbackCode) {
 function artifactUrls(baseUrl, runId, artifacts) {
   const urls = {}
   ;(artifacts || []).forEach((artifact) => {
-    const key = String(artifact.name || '').replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '')
+    const basename = String(artifact.name || '').replace(/\.[^.]+$/, '')
+    const key = basename.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '')
     if (key) {
       urls[key] = joinUrl(
         baseUrl,
