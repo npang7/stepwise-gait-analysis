@@ -12,8 +12,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 _DATA_DIR = tempfile.mkdtemp(prefix="stepwise_api_tests_")
 os.environ["STEPWISE_DATA_DIR"] = _DATA_DIR
 
-from stepwise_cloudrun_flask.app import app  # noqa: E402
-
+from stepwise_cloudrun_flask.app import app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "minimal_walk.txt"
 

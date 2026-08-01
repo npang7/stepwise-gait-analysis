@@ -39,12 +39,12 @@ Page({
       topLevel: result.top_level,
       generatedAt: result.generated_at || '',
       summary: result.summary || {},
-      cards: enrichCards(result.cards),
+      cards: enrichCards(result.risk_cards || result.cards),
       urls: result.urls || {},
       sampleRate: fmt(result.summary && result.summary.estimated_sample_rate_hz, 1),
-      pitchDelta: fmt(result.metrics && result.metrics.PitchDelta, 2),
-      landingAngle: fmt(result.metrics && result.metrics.LandingAngle, 2),
-      archRatio: fmt(result.metrics && result.metrics.ArchRatio, 3)
+      pitchDelta: fmt(result.metrics && result.metrics.PitchDelta_stance_from_standing, 2),
+      landingAngle: fmt(result.metrics && result.metrics.LandingSoleGroundAngle_deg, 2),
+      archRatio: fmt(result.metrics && result.metrics.ArchRatio_mean, 3)
     })
   },
 

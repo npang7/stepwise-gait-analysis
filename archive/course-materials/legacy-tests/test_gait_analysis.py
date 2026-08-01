@@ -11,18 +11,17 @@ import pandas as pd
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-from stepwise_gait_analysis import (  # noqa: E402
+from stepwise_gait_analysis import (
     SensorLayout,
-    add_basic_features,
     adaptive_threshold,
+    add_basic_features,
     contact_intervals,
     extract_step_features,
     hysteresis_contact,
     parse_stepwise_txt,
     rolling_smooth,
 )
-from stepwise_reference_pipeline import write_json_outputs  # noqa: E402
-
+from stepwise_reference_pipeline import write_json_outputs
 
 FIXTURE = Path(__file__).parent / "fixtures" / "minimal_walk.txt"
 

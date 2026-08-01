@@ -2,10 +2,12 @@ const config = require('./config')
 
 App({
   onLaunch() {
-    wx.cloud.init({
-      env: config.cloudEnv,
-      traceUser: true
-    })
+    if (config.cloudEnv) {
+      wx.cloud.init({
+        env: config.cloudEnv,
+        traceUser: true
+      })
+    }
   },
   globalData: {
     apiBase: config.apiBase,

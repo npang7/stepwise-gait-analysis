@@ -26,7 +26,7 @@ function saveHistory(result) {
     topLevel: result.top_level || 'Low',
     summary: result.summary || {},
     metrics: result.metrics || {},
-    cards: result.cards || [],
+    cards: result.risk_cards || result.cards || [],
     urls: result.urls || {},
     result
   }

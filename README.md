@@ -1,121 +1,156 @@
-# StepWise Gait Analysis Prototype
+# StepWise Gait Analysis
 
-StepWise is an end-to-end engineering prototype that turns plantar-pressure and
-IMU TXT recordings into explainable gait-screening outputs. It parses recordings,
-smooths signals, segments stance phases with adaptive hysteresis, computes
-regional-loading, gait-timing, and center-of-pressure proxy features, and applies
-data-quality and evidence-conflict gates before emitting conclusions.
+StepWise is a modular software prototype that converts plantar-pressure and IMU text recordings into explainable gait-screening reports. It combines a typed Python analysis package, an asynchronous FastAPI service, a CLI/batch adapter, and a WeChat Mini Program client.
 
-This repository is a software screening prototype, not a medical device. Its
-rules and outputs are not clinically validated and must not be used for diagnosis.
+This is an engineering screening prototype, not a medical device. Its rules have not been clinically validated and its outputs must not be used for diagnosis.
 
 ## Architecture
 
-- `stepwise_gait_analysis.py`: parsing, preprocessing, segmentation, features,
-  quality checks, plots, and the base report pipeline.
-- `stepwise_reference_pipeline.py`: standing calibration, evidence comparison,
-  strict JSON results, and user/technical HTML reports.
-- `stepwise_cloudrun_flask/app.py`: `POST /api/analyze-text` Flask adapter used by
-  the mini-program prototype.
-- `app.py`: local FastAPI demo and report-file server.
-- `stepwise_miniprogram/`: upload, result, education, and local-history views for
-  the WeChat Mini Program prototype.
-- `tests/fixtures/minimal_walk.txt`: anonymous synthetic fixture; it contains no
-  participant recording.
+```text
+CLI / batch ───────┐
+                   │
+FastAPI ─ queue ─ worker process ─┐
+                   │              │
+WeChat Mini Program┘              ▼
+                         AnalysisService
+                                │
+          parse → smooth → segment → features → quality/rules → reports
+                                │
+                     atomic UUID manifest + artifacts
+```
 
-Both web adapters execute the two canonical analysis files at the repository
-root. The Docker build does not maintain a second copy.
+`AnalysisService.analyze(walking_path, standing_path, output_dir, config)` is the only business entry point. The API, CLI, batch runner, and workers do not duplicate the algorithm.
+
+The active source is under `src/stepwise`:
+
+- `parsing.py`, `signal.py`, and `features.py`: UTF-8 TXT parsing, preprocessing, adaptive-hysteresis stance detection, and feature extraction.
+- `screening.py`: data-quality and evidence-conflict gates with non-diagnostic risk cards.
+- `service.py` and `reporting.py`: the end-to-end analysis entry point and strict JSON/CSV/HTML/plot artifacts.
+- `storage.py` and `jobs.py`: atomic filesystem manifests, TTL cleanup, a bounded queue, worker crash handling, and killable hard timeouts.
+- `api.py`: versioned multipart HTTP API.
+- `cli.py`: local analyze and batch commands.
+
+The original course scripts and services are preserved under `archive/course-materials` and are not runtime dependencies.
 
 ## Install
 
-Python 3.11 is recommended.
+Python 3.11 or 3.12 is supported.
 
-```bash
+```powershell
 python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-On macOS/Linux, activate or call `.venv/bin/python` instead.
+On macOS/Linux, use `.venv/bin/python`.
 
-## Run the analysis pipeline
+## CLI
+
+Analyze one walking file:
+
+```powershell
+.venv\Scripts\python.exe -m stepwise analyze tests\fixtures\minimal_walk.txt --output stepwise-output\demo
+```
+
+Add an optional standing-calibration recording and sensor mapping:
+
+```powershell
+.venv\Scripts\python.exe -m stepwise analyze walking.txt --standing standing.txt --output stepwise-output\trial --mapping-json '{"heel":"P2","arch":"P3","medial_forefoot":"P4","lateral_forefoot":"P1","pitch_eversion_sign":"positive"}'
+```
+
+Batch every `.txt` file in a directory:
+
+```powershell
+.venv\Scripts\python.exe -m stepwise batch .\anonymous-trials --output stepwise-output\batch
+```
+
+Exit codes are stable: `0` success, `2` invalid input, and `1` unexpected analysis failure.
+
+## FastAPI
+
+Start one API service process; analyses still run in separate supervised worker processes:
+
+```powershell
+.venv\Scripts\python.exe -m uvicorn stepwise.api:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
+```
+
+OpenAPI is available at `http://127.0.0.1:8080/docs` and health at `GET /healthz`.
+
+Create an analysis:
 
 ```bash
-python stepwise_reference_pipeline.py tests/fixtures/minimal_walk.txt --output-dir stepwise_output
+curl -X POST http://127.0.0.1:8080/api/v1/analyses \
+  -F "walking=@walking.txt;type=text/plain" \
+  -F "standing=@standing.txt;type=text/plain" \
+  -F 'sensor_mapping={"heel":"P2","arch":"P3","medial_forefoot":"P4","lateral_forefoot":"P1","pitch_eversion_sign":"positive"}'
 ```
 
-For standing calibration and an explicit sensor map:
+The server returns `202 Accepted`, a UUID, a status URL, and a result URL. Poll the status resource until `succeeded` or `failed`, then fetch strict JSON and the allowlisted artifacts.
 
-```bash
-python stepwise_reference_pipeline.py walking.txt --standing-file standing.txt --output-dir stepwise_output --heel P2 --arch P3 --medial-forefoot P4 --lateral-forefoot P1
-```
+### API routes
 
-The TXT parser expects a numeric time column followed by pressure and IMU
-measurements. Generated outputs include processed CSV data, feature tables,
-strict JSON summaries, plots, and HTML reports. Non-finite values are serialized
-as JSON `null`, never non-standard `NaN` tokens.
+- `POST /api/v1/analyses`
+- `GET /api/v1/analyses/{run_id}`
+- `GET /api/v1/analyses/{run_id}/result`
+- `GET /api/v1/analyses/{run_id}/artifacts/{name}`
+- `GET /healthz`
 
-## Run the Flask API
+### Error model
 
-```bash
-python stepwise_cloudrun_flask/app.py
-```
-
-Health check: `GET /healthz`. Analysis request:
+Errors use one stable shape:
 
 ```json
 {
-  "walkingText": "contents of walking.txt",
-  "standingText": "optional contents of standing.txt"
+  "error": {
+    "code": "binary_input",
+    "message": "uploaded recording must be text"
+  }
 }
 ```
 
-The response preserves the mini-program fields `run_id`, `top_result`, `summary`,
-`metrics`, `cards`, and `urls`. Each request receives a UUID run ID. Empty or
-oversized inputs return 4xx errors; analysis timeouts and execution failures return
-structured 5xx errors. Configure storage and request limits with:
+Important status codes include `413` for oversized uploads, `422` for invalid text/timestamps/mapping, `429` for a full queue, `409` when a result is not ready, and `404` for unknown jobs or unlisted artifacts. Worker failures use stable codes such as `analysis_timeout`, `worker_crashed`, and `service_restarted`.
 
-- `STEPWISE_DATA_DIR` (default: repository root)
-- `STEPWISE_MAX_INPUT_CHARS` (default: `2000000` per TXT field)
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `STEPWISE_DATA_DIR` | `./stepwise-data` | UUID run directories and artifacts |
+| `STEPWISE_MAX_UPLOAD_BYTES` | `2097152` | Maximum bytes per uploaded recording |
+| `STEPWISE_ANALYSIS_TIMEOUT_SECONDS` | `120` | Hard worker timeout |
+| `STEPWISE_MAX_WORKERS` | `2` | Concurrent analysis processes |
+| `STEPWISE_MAX_QUEUE` | `8` | Waiting jobs before `429` |
+| `STEPWISE_RESULT_TTL_HOURS` | `24` | Terminal-result retention |
+
+On startup, successful jobs remain available and incomplete jobs become `failed/service_restarted`. Expired terminal jobs are removed at startup and when the service creates work.
 
 ## WeChat Mini Program
 
-Edit `stepwise_miniprogram/config.js` locally to select either a cloud container
-or an HTTPS API. The checked-in file intentionally contains no deployment URL or
-private environment ID. `project.private.config.json` is ignored.
+`stepwise_miniprogram` uploads the multipart request, polls status, displays results, and stores compact local history. Update `stepwise_miniprogram/config.js` locally with either WeChat Cloud Run identifiers or an HTTPS API base URL. The checked-in file intentionally contains no live endpoint or private environment ID.
 
-The prototype stores compact history records in the mini-program's local storage.
-It does not provide authentication, a database, durable cloud storage, or a
-guaranteed live public endpoint.
+The API client/state machine is independent from the page and has Node tests for upload construction, polling, success, failure, and local history.
 
-## Batch analysis
-
-Set the input and output directories instead of editing source paths:
+## Tests and quality gates
 
 ```powershell
-$env:STEPWISE_BATCH_DATA_DIR = "C:\path\to\anonymous-trials"
-$env:STEPWISE_OUTPUT_DIR = "C:\path\to\reports"
-python batch_stepwise_reports.py
+.venv\Scripts\python.exe -m ruff check src tests
+.venv\Scripts\python.exe -m mypy src\stepwise
+.venv\Scripts\python.exe -m pytest --cov=stepwise --cov-report=term-missing
+node --test tests\js\*.test.js
 ```
 
-Historical project artifacts include outputs for nine labeled trial conditions.
-Those reports are generated evidence and are intentionally excluded from Git.
+Coverage must remain at least 80%. Tests include parsing and timestamp errors, smoothing, hysteresis and feature regression, quality/conflict rules, strict JSON, atomic manifest recovery, TTL cleanup, artifact traversal, queue capacity, worker crash, hard timeout, HTTP status contracts, CLI exit codes, and a real multipart-to-artifact worker run.
 
-## Test
+GitHub Actions runs the Python gates on 3.11 and 3.12, runs the Mini Program tests, builds the Docker image, and starts a real container. The container gate covers health, upload, polling, result, and artifact download. A workflow file existing locally does not prove that remote CI has run.
+
+## Docker
 
 ```bash
-python -m unittest discover -s tests -v
+docker build -t stepwise-api .
+docker run --rm -p 8080:8080 stepwise-api
+python -m stepwise.ci_smoke --base-url http://127.0.0.1:8080 --walking tests/fixtures/minimal_walk.txt
 ```
 
-The suite covers TXT parsing, invalid timestamps, smoothing, adaptive-hysteresis
-stance detection, NumPy 1.26 compatibility, strict JSON, empty/oversized API
-inputs, timeouts, end-to-end API output, configuration, and repository hygiene.
+The image uses Python 3.11 slim, runs as the non-root `stepwise` user, exposes one Uvicorn service process, and includes a health check. Docker becomes a confirmed resume skill only after a real local or remote container smoke test succeeds.
 
-To build the Flask image from the canonical source tree:
+## Deliberate scope boundaries
 
-```bash
-docker build -f stepwise_cloudrun_flask/Dockerfile -t stepwise-api .
-docker run --rm -p 8080:80 stepwise-api
-```
-
-The prototype scope deliberately excludes clinical validation, production-scale
-load testing, authentication, a database, and long-term cloud storage.
+This version does not add authentication, a database, a shared distributed queue, long-term object storage, a public deployment, or new clinical algorithms. Those are future production-system extensions, not completed claims.

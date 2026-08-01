@@ -3,10 +3,17 @@ __pycache__/
 .venv/
 .worktrees/
 .env
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.egg-info/
 
 # User-specific configuration and uploaded recordings
 stepwise_miniprogram/project.private.config.json
 miniapp_uploads/
+stepwise-data/
 
 # Generated reports, exports, and previews
 miniapp_reports/
