@@ -139,16 +139,17 @@ node --test tests\js\*.test.js
 
 Coverage must remain at least 80%. Tests include parsing and timestamp errors, smoothing, hysteresis and feature regression, quality/conflict rules, strict JSON, atomic manifest recovery, TTL cleanup, artifact traversal, queue capacity, worker crash, hard timeout, HTTP status contracts, CLI exit codes, and a real multipart-to-artifact worker run.
 
-GitHub Actions runs the Python gates on 3.11 and 3.12, runs the Mini Program tests, and builds the Docker image. A workflow file existing locally does not prove that remote CI has run.
+GitHub Actions runs the Python gates on 3.11 and 3.12, runs the Mini Program tests, builds the Docker image, and starts a real container. The container gate covers health, upload, polling, result, and artifact download. A workflow file existing locally does not prove that remote CI has run.
 
 ## Docker
 
 ```bash
 docker build -t stepwise-api .
 docker run --rm -p 8080:8080 stepwise-api
+python -m stepwise.ci_smoke --base-url http://127.0.0.1:8080 --walking tests/fixtures/minimal_walk.txt
 ```
 
-The image uses Python 3.11 slim, runs as the non-root `stepwise` user, exposes one Uvicorn service process, and includes a health check. A local Docker build is an acceptance requirement before Docker is claimed as a confirmed resume skill.
+The image uses Python 3.11 slim, runs as the non-root `stepwise` user, exposes one Uvicorn service process, and includes a health check. Docker becomes a confirmed resume skill only after a real local or remote container smoke test succeeds.
 
 ## Deliberate scope boundaries
 

@@ -57,6 +57,24 @@ class RepositoryHygieneTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, workflow)
 
+    def test_ci_docker_job_runs_real_container_smoke_test(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        for token in (
+            "docker run",
+            "python -m stepwise.ci_smoke",
+            "tests/fixtures/minimal_walk.txt",
+            "docker logs stepwise-ci",
+            "docker rm --force stepwise-ci",
+            "if: always()",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, workflow)
+
+    def test_readme_documents_remote_container_smoke_gate(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("python -m stepwise.ci_smoke", readme)
+        self.assertIn("health, upload, polling, result, and artifact download", readme)
+
     def test_source_files_have_no_teammate_machine_paths(self) -> None:
         candidates = [
             *ROOT.glob("src/**/*.py"),
