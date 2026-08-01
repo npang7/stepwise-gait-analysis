@@ -8,6 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackageLayoutTests(unittest.TestCase):
+    def test_tests_directory_is_an_importable_package(self) -> None:
+        self.assertTrue(
+            (ROOT / "tests" / "__init__.py").is_file(),
+            "tests/__init__.py is required for portable test-helper imports",
+        )
+
     def test_modular_package_layout_exists(self) -> None:
         expected = [
             ROOT / "pyproject.toml",
