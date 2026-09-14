@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pandas as pd
+
+_Trapezoid = Callable[[Any, Any], Any]
+
+
+def _select_trapezoid(module: Any) -> _Trapezoid:
+    return module.trapezoid if hasattr(module, "trapezoid") else module.trapz
+
+
+_TRAPEZOID = _select_trapezoid(np)
 
 
 def _classify_step(row: pd.Series) -> str:
@@ -42,7 +52,6 @@ def extract_stance_features(
         stride_time = np.nan if previous_start_time is None else start_time - previous_start_time
         swing_time = np.nan if previous_start_time is None else stride_time - stance_time
         previous_start_time = start_time
-        trapezoid = getattr(np, "trapezoid", np.trapz)
         row: dict[str, Any] = {
             "Step": step_index,
             "StartSample": int(segment["Sample"].iloc[0]),
@@ -54,7 +63,7 @@ def extract_stance_features(
             "SwingTime_s": swing_time,
             "PeakPressure_N": float(segment["TotalPressure"].max()),
             "MeanPressure_N": float(segment["TotalPressure"].mean()),
-            "PressureImpulse_Ns": float(trapezoid(segment["TotalPressure"], segment["Time_s"])),
+            "PressureImpulse_Ns": float(_TRAPEZOID(segment["TotalPressure"], segment["Time_s"])),
             "EarlyRearRatio_mean": float(early["RearRatio"].mean(skipna=True)),
             "EarlyFrontRatio_mean": float(early["FrontRatio"].mean(skipna=True)),
             "RearRatio_mean": float(segment["RearRatio"].mean(skipna=True)),

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -11,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from stepwise.features import (
+    _select_trapezoid,
     compute_session_metrics,
     extract_stance_features,
     summarize_session,
@@ -64,6 +66,13 @@ class ParsingTests(unittest.TestCase):
 
 
 class SignalAndFeatureTests(unittest.TestCase):
+    def test_trapezoid_selection_is_lazy_and_supports_both_numpy_apis(self) -> None:
+        modern = object()
+        legacy = object()
+
+        self.assertIs(_select_trapezoid(SimpleNamespace(trapezoid=modern)), modern)
+        self.assertIs(_select_trapezoid(SimpleNamespace(trapz=legacy)), legacy)
+
     def _analyze_fixture(self):
         config = AnalysisConfig(sensor_mapping=SensorMapping())
         parsed = parse_stepwise_txt(FIXTURE)
