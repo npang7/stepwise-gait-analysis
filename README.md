@@ -137,6 +137,11 @@ The API client/state machine is independent from the page and has Node tests for
 node --test tests\js\*.test.js
 ```
 
+Run the reproducible performance baseline with `python bench_stepwise.py --compare`.
+It writes aggregate evidence to `bench-data/baseline-*.json`, appends median rows to
+`BENCHMARKS.md`, and records the one-off directional comparison stdout under `bench-data/`.
+Reproduce it from a clean `pip install -e ".[dev]"` environment without overriding dependencies.
+
 Coverage must remain at least 80%. Tests include parsing and timestamp errors, smoothing, hysteresis and feature regression, quality/conflict rules, strict JSON, atomic manifest recovery, TTL cleanup, artifact traversal, queue capacity, worker crash, hard timeout, HTTP status contracts, CLI exit codes, and a real multipart-to-artifact worker run.
 
 GitHub Actions runs the Python gates on 3.11 and 3.12, runs the Mini Program tests, builds the Docker image, and starts a real container. The container gate covers health, upload, polling, result, and artifact download. A workflow file existing locally does not prove that remote CI has run.

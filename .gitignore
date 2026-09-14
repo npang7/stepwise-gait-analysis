@@ -33,3 +33,8 @@ presentation_assets/
 *.zip
 *.docx
 miniapp_test_result*.html
+
+# Benchmark inputs and generated artifacts (aggregate evidence remains tracked)
+bench-data/walk_*.txt
+bench-data/artifacts_*/
+bench-data/compare/
