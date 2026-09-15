@@ -38,58 +38,115 @@ def _classify_step(row: pd.Series) -> str:
 def extract_stance_features(
     frame: pd.DataFrame, intervals: list[tuple[int, int]]
 ) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
-    previous_start_time: float | None = None
-    for step_index, (start_index, end_index) in enumerate(intervals, start=1):
-        segment = frame.iloc[start_index : end_index + 1]
-        early_end = start_index + max(1, int((end_index - start_index + 1) * 0.20))
-        early = frame.iloc[start_index : early_end + 1]
-        late_start = start_index + int((end_index - start_index + 1) * 0.65)
-        late = frame.iloc[late_start : end_index + 1]
-        start_time = float(segment["Time_s"].iloc[0])
-        end_time = float(segment["Time_s"].iloc[-1])
-        stance_time = end_time - start_time
-        stride_time = np.nan if previous_start_time is None else start_time - previous_start_time
-        swing_time = np.nan if previous_start_time is None else stride_time - stance_time
-        previous_start_time = start_time
-        row: dict[str, Any] = {
-            "Step": step_index,
-            "StartSample": int(segment["Sample"].iloc[0]),
-            "EndSample": int(segment["Sample"].iloc[-1]),
-            "StartTime_s": start_time,
-            "EndTime_s": end_time,
-            "StanceTime_s": stance_time,
-            "StrideTime_s": stride_time,
-            "SwingTime_s": swing_time,
-            "PeakPressure_N": float(segment["TotalPressure"].max()),
-            "MeanPressure_N": float(segment["TotalPressure"].mean()),
-            "PressureImpulse_Ns": float(_TRAPEZOID(segment["TotalPressure"], segment["Time_s"])),
-            "EarlyRearRatio_mean": float(early["RearRatio"].mean(skipna=True)),
-            "EarlyFrontRatio_mean": float(early["FrontRatio"].mean(skipna=True)),
-            "RearRatio_mean": float(segment["RearRatio"].mean(skipna=True)),
-            "ArchRatio_mean": float(segment["ArchRatio"].mean(skipna=True)),
-            "FrontRatio_mean": float(segment["FrontRatio"].mean(skipna=True)),
-            "MedialRatio_mean": float(segment["MedialRatio"].mean(skipna=True)),
-            "LateralRatio_mean": float(segment["LateralRatio"].mean(skipna=True)),
-            "MedialLateralBalance_mean": float(segment["MedialLateralBalance"].mean(skipna=True)),
-            "ToeRatio_late_stance_mean": float(late["ToeRatio"].mean(skipna=True)),
-            "PushOffRatio_late_stance_mean": float(late["PushOffRatio"].mean(skipna=True)),
-            "CoP_AP_early_mean": float(early["CoP_AP"].mean(skipna=True)),
-            "CoP_AP_late_mean": float(late["CoP_AP"].mean(skipna=True)),
-            "CoP_AP_progression": float(late["CoP_AP"].mean(skipna=True) - early["CoP_AP"].mean(skipna=True)),
-            "CoP_ML_mean": float(segment["CoP_ML"].mean(skipna=True)),
-            "InitialContactRoll_deg": float(segment["Roll"].iloc[0]),
-            "LandingRoll_mean_deg": float(early["Roll"].mean(skipna=True)),
-            "InitialContactPitch_deg": float(segment["Pitch"].iloc[0]),
-            "LandingPitch_mean_deg": float(early["Pitch"].mean(skipna=True)),
-            "PitchRange_deg": float(segment["Pitch"].max() - segment["Pitch"].min()),
-            "RollRange_deg": float(segment["Roll"].max() - segment["Roll"].min()),
-            "GyrMag_peak": float(segment["GyrMag"].max()),
-            "AccMag_peak": float(segment["AccMag"].max()),
+    if not intervals:
+        return pd.DataFrame()
+
+    starts = np.asarray([start for start, _end in intervals], dtype=np.int64)
+    ends = np.asarray([end for _start, end in intervals], dtype=np.int64)
+    lengths = ends - starts + 1
+    early_offsets = np.maximum(1, (lengths * 0.20).astype(np.int64))
+    early_ends = starts + early_offsets
+    late_starts = starts + (lengths * 0.65).astype(np.int64)
+    stance_ids = np.arange(len(intervals), dtype=np.int64)
+
+    def labels_for(label_starts: np.ndarray, label_ends: np.ndarray) -> np.ndarray:
+        labels = np.full(len(frame), -1, dtype=np.int64)
+        occupancy_delta = np.zeros(len(frame) + 1, dtype=np.int64)
+        np.add.at(occupancy_delta, label_starts, 1)
+        np.add.at(occupancy_delta, label_ends + 1, -1)
+        active = np.cumsum(occupancy_delta[:-1]) > 0
+        labels[active] = np.repeat(stance_ids, label_ends - label_starts + 1)
+        return labels
+
+    stance_labels = labels_for(starts, ends)
+    early_labels = labels_for(starts, early_ends)
+    late_labels = labels_for(late_starts, ends)
+    tagged = frame.assign(
+        _stance=stance_labels,
+        _early=early_labels,
+        _late=late_labels,
+    )
+
+    stance = tagged[tagged["_stance"] >= 0].groupby("_stance", sort=True)
+    early = tagged[tagged["_early"] >= 0].groupby("_early", sort=True)
+    late = tagged[tagged["_late"] >= 0].groupby("_late", sort=True)
+
+    times = frame["Time_s"].to_numpy(dtype=np.float64)
+    pressures = frame["TotalPressure"].to_numpy(dtype=np.float64)
+    increments = np.zeros(len(frame), dtype=np.float64)
+    increments[1:] = np.diff(times) * (pressures[1:] + pressures[:-1]) / 2.0
+    increments[starts] = 0.0
+    impulse = (
+        pd.DataFrame({"_stance": stance_labels, "_increment": increments})
+        .loc[lambda data: data["_stance"] >= 0]
+        .groupby("_stance", sort=True)["_increment"]
+        .sum()
+        .to_numpy(dtype=np.float64)
+    )
+
+    start_times = frame["Time_s"].to_numpy(dtype=np.float64)[starts]
+    end_times = frame["Time_s"].to_numpy(dtype=np.float64)[ends]
+    stance_times = end_times - start_times
+    stride_times = np.empty(len(intervals), dtype=np.float64)
+    stride_times[0] = np.nan
+    stride_times[1:] = np.diff(start_times)
+    swing_times = stride_times - stance_times
+    swing_times[0] = np.nan
+
+    def stance_mean(column: str) -> np.ndarray:
+        return stance[column].mean().to_numpy(dtype=np.float64)
+
+    def early_mean(column: str) -> np.ndarray:
+        return early[column].mean().to_numpy(dtype=np.float64)
+
+    def late_mean(column: str) -> np.ndarray:
+        return late[column].mean().to_numpy(dtype=np.float64)
+
+    early_cop_ap = early_mean("CoP_AP")
+    late_cop_ap = late_mean("CoP_AP")
+    result = pd.DataFrame(
+        {
+            "Step": np.arange(1, len(intervals) + 1, dtype=np.int64),
+            "StartSample": frame["Sample"].to_numpy()[starts].astype(np.int64),
+            "EndSample": frame["Sample"].to_numpy()[ends].astype(np.int64),
+            "StartTime_s": start_times,
+            "EndTime_s": end_times,
+            "StanceTime_s": stance_times,
+            "StrideTime_s": stride_times,
+            "SwingTime_s": swing_times,
+            "PeakPressure_N": stance["TotalPressure"].max().to_numpy(dtype=np.float64),
+            "MeanPressure_N": stance_mean("TotalPressure"),
+            "PressureImpulse_Ns": impulse,
+            "EarlyRearRatio_mean": early_mean("RearRatio"),
+            "EarlyFrontRatio_mean": early_mean("FrontRatio"),
+            "RearRatio_mean": stance_mean("RearRatio"),
+            "ArchRatio_mean": stance_mean("ArchRatio"),
+            "FrontRatio_mean": stance_mean("FrontRatio"),
+            "MedialRatio_mean": stance_mean("MedialRatio"),
+            "LateralRatio_mean": stance_mean("LateralRatio"),
+            "MedialLateralBalance_mean": stance_mean("MedialLateralBalance"),
+            "ToeRatio_late_stance_mean": late_mean("ToeRatio"),
+            "PushOffRatio_late_stance_mean": late_mean("PushOffRatio"),
+            "CoP_AP_early_mean": early_cop_ap,
+            "CoP_AP_late_mean": late_cop_ap,
+            "CoP_AP_progression": late_cop_ap - early_cop_ap,
+            "CoP_ML_mean": stance_mean("CoP_ML"),
+            "InitialContactRoll_deg": frame["Roll"].to_numpy(dtype=np.float64)[starts],
+            "LandingRoll_mean_deg": early_mean("Roll"),
+            "InitialContactPitch_deg": frame["Pitch"].to_numpy(dtype=np.float64)[starts],
+            "LandingPitch_mean_deg": early_mean("Pitch"),
+            "PitchRange_deg": (
+                stance["Pitch"].max() - stance["Pitch"].min()
+            ).to_numpy(dtype=np.float64),
+            "RollRange_deg": (
+                stance["Roll"].max() - stance["Roll"].min()
+            ).to_numpy(dtype=np.float64),
+            "GyrMag_peak": stance["GyrMag"].max().to_numpy(dtype=np.float64),
+            "AccMag_peak": stance["AccMag"].max().to_numpy(dtype=np.float64),
         }
-        row["Pattern"] = _classify_step(pd.Series(row))
-        rows.append(row)
-    return pd.DataFrame(rows)
+    )
+    result["Pattern"] = result.apply(_classify_step, axis=1)
+    return result
 
 
 def summarize_session(

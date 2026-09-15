@@ -62,6 +62,9 @@ HEADER = (
     "StepWise synthetic benchmark recording\n"
     "Sample SystemTime P1 P2 P3 P4 AccX AccY AccZ GyrX GyrY GyrZ Pitch Roll Yaw\n"
 )
+BENCHMARK_APPEND_MARKER = (
+    "<!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->\n"
+)
 
 
 def timed(fn, *args, **kwargs):
@@ -332,6 +335,25 @@ def benchmark_markdown_rows(
     return lines
 
 
+def append_benchmark_rows(log: Path, rows: list[str]) -> None:
+    """Insert pipeline rows immediately before the stable end-of-file marker."""
+    if not log.exists():
+        log.write_text(
+            "# StepWise benchmarks\n\n"
+            "## Pipeline measurements\n\n"
+            "| date | commit | samples | total s | note |\n"
+            "|---|---|---:|---:|---|\n"
+            + BENCHMARK_APPEND_MARKER,
+            encoding="utf-8",
+        )
+    content = log.read_text(encoding="utf-8")
+    if content.count(BENCHMARK_APPEND_MARKER) != 1:
+        raise RuntimeError("BENCHMARKS.md must contain exactly one append marker")
+    insertion = "".join(rows)
+    content = content.replace(BENCHMARK_APPEND_MARKER, insertion + BENCHMARK_APPEND_MARKER)
+    log.write_text(content, encoding="utf-8")
+
+
 class Tee(io.TextIOBase):
     def __init__(self, *streams: io.TextIOBase) -> None:
         self.streams = streams
@@ -397,16 +419,12 @@ def run(args: argparse.Namespace, stamp: str) -> None:
     target.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
     log = Path("BENCHMARKS.md")
-    if not log.exists():
-        log.write_text("# StepWise benchmarks\n\n"
-                       "| date | commit | samples | total s | note |\n"
-                       "|---|---|---:|---:|---|\n", encoding="utf-8")
-    with log.open("a", encoding="utf-8") as handle:
-        handle.writelines(
-            benchmark_markdown_rows(
-                stamp, record["commit"], summaries, args.repeat, args.warmup
-            )
-        )
+    append_benchmark_rows(
+        log,
+        benchmark_markdown_rows(
+            stamp, record["commit"], summaries, args.repeat, args.warmup
+        ),
+    )
 
     print(f"\nwrote {target} and appended {len(summaries)} row(s) to BENCHMARKS.md")
 

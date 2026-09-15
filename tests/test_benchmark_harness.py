@@ -56,6 +56,36 @@ def test_markdown_has_one_median_row_per_size() -> None:
     assert "| 200 | 20.00 | median of 3 after 1 warmup, spread 20.0% |" in lines[1]
 
 
+def test_marker_append_keeps_pipeline_table_last_and_preserves_phase_one(tmp_path) -> None:
+    log = tmp_path / "BENCHMARKS.md"
+    phase_one = "## Phase 1 upload measurements\n\n| upload | value |\n|---|---:|\n| rss | 1 |\n\n"
+    pipeline = (
+        "## Pipeline measurements\n\n"
+        "| date | commit | samples | total s | note |\n"
+        "|---|---|---:|---:|---|\n"
+        "| OLD | abc | 100 | 1.00 | baseline |\n"
+    )
+    log.write_text(
+        "# StepWise benchmarks\n\n"
+        + phase_one
+        + pipeline
+        + bench_stepwise.BENCHMARK_APPEND_MARKER,
+        encoding="utf-8",
+    )
+
+    bench_stepwise.append_benchmark_rows(log, ["| NEW1 | def | 100 | 0.50 | first |\n"])
+    bench_stepwise.append_benchmark_rows(log, ["| NEW2 | ghi | 100 | 0.40 | second |\n"])
+
+    content = log.read_text(encoding="utf-8")
+    assert content.count(phase_one) == 1
+    assert content.index("## Phase 1 upload measurements") < content.index(
+        "## Pipeline measurements"
+    )
+    assert content.index("| OLD |") < content.index("| NEW1 |") < content.index("| NEW2 |")
+    assert content.endswith(bench_stepwise.BENCHMARK_APPEND_MARKER)
+    assert content.count(bench_stepwise.BENCHMARK_APPEND_MARKER) == 1
+
+
 def test_run_discards_one_warmup_per_size_and_records_count(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
