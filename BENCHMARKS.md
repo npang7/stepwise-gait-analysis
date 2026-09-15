@@ -28,4 +28,26 @@ The full protocol, dependency metadata, source commits, and submission timings a
 | 20260915-195234 | cd64bdf | 30000 | 2.29 | median of 3 after 1 warmup, spread 3.5% |
 | 20260915-195234 | cd64bdf | 180000 | 10.93 | median of 3 after 1 warmup, spread 3.5% |
 | 20260915-195234 | cd64bdf | 360000 | 21.62 | median of 3 after 1 warmup, spread 0.9% |
+
+> The section 5.2 `stance_features` result is valid (2.8814 s to 0.4306 s at 360,000
+> samples). Its TOTAL is not directly comparable with the Phase 0 warm-up baseline: the
+> sessions were about 20 hours apart, and the untouched parse, features_basic, segment,
+> and artifacts stages measured 0.7%, 5.1%, 9.1%, and 6.4% slower respectively at 360,000
+> samples, indicating machine-state drift. Starting with section 5.3, before and after are
+> measured back to back in the same session.
+
+## Back-to-back pipeline measurements (section 5.3 onward)
+
+| date | commit | samples | total s | note |
+|---|---|---:|---:|---|
+| 20260915-211042 | 33faa78 | 1682 | 0.52 | median of 3 after 1 warmup, spread 4.4% |
+| 20260915-211042 | 33faa78 | 6000 | 0.87 | median of 3 after 1 warmup, spread 9.6% |
+| 20260915-211042 | 33faa78 | 30000 | 2.69 | median of 3 after 1 warmup, spread 19.7% |
+| 20260915-211042 | 33faa78 | 180000 | 11.83 | median of 3 after 1 warmup, spread 2.3% |
+| 20260915-211042 | 33faa78 | 360000 | 23.44 | median of 3 after 1 warmup, spread 4.4% |
+| 20260915-211359 | 5af25b5 | 1682 | 0.48 | median of 3 after 1 warmup, spread 3.1% |
+| 20260915-211359 | 5af25b5 | 6000 | 0.78 | median of 3 after 1 warmup, spread 6.1% |
+| 20260915-211359 | 5af25b5 | 30000 | 2.30 | median of 3 after 1 warmup, spread 1.6% |
+| 20260915-211359 | 5af25b5 | 180000 | 21.98 | median of 3 after 1 warmup, spread 63.0% |
+| 20260915-211359 | 5af25b5 | 360000 | 22.55 | median of 3 after 1 warmup, spread 2.7% |
 <!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->

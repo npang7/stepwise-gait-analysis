@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -21,6 +23,7 @@ from stepwise.models import AnalysisConfig, SensorMapping
 from stepwise.parsing import (
     InputValidationError,
     parse_stepwise_bytes,
+    parse_stepwise_text,
     parse_stepwise_txt,
 )
 from stepwise.signal import (
@@ -43,15 +46,65 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(len(bom), 20)
         self.assertAlmostEqual(float(plain["Time_s"].iloc[-1]), 0.19)
 
-    def test_parser_rejects_empty_binary_and_invalid_timestamp(self) -> None:
+    def test_parser_preserves_all_five_validation_codes(self) -> None:
         for payload, code in (
             (b"", "empty_input"),
             (b"\x00\x01\x02", "binary_input"),
+            (b"\xff\xfe", "invalid_encoding"),
+            (b"StepWise header only\n", "no_data_rows"),
             (b"1 not-a-time 1 2 3 4 0 0 1 0 0 0 0 0 0\n", "invalid_timestamp"),
         ):
             with self.subTest(code=code), self.assertRaises(InputValidationError) as context:
                 parse_stepwise_bytes(payload)
             self.assertEqual(context.exception.code, code)
+
+    def test_well_formed_input_uses_the_pandas_fast_path(self) -> None:
+        text = FIXTURE.read_text(encoding="utf-8")
+        with patch(
+            "stepwise.parsing._parse_stepwise_text_line_filter",
+            side_effect=AssertionError("line filter should not run"),
+        ):
+            parsed = parse_stepwise_text(text)
+        self.assertEqual(len(parsed), 20)
+
+    def test_vectorized_filter_matches_legacy_malformed_semantics(self) -> None:
+        fixture = ROOT / "tests" / "fixtures" / "malformed_interleaved.txt"
+        with patch(
+            "stepwise.parsing._parse_stepwise_text_line_filter",
+            side_effect=AssertionError("line filter should not run"),
+        ):
+            parsed = parse_stepwise_text(fixture.read_text(encoding="utf-8"))
+        self.assertEqual(len(parsed), 8)
+        self.assertEqual(int(parsed["P1"].isna().sum()), 1)
+
+    def test_short_extra_junk_and_non_digit_sample_rows_are_dropped(self) -> None:
+        valid = "0 00:00:00.000 1 2 3 4 0 0 1 0 0 0 0 0 0"
+        valid_two = "1 00:00:00.010 1 2 3 4 0 0 1 0 0 0 0 0 0"
+        text = "\n".join(
+            (
+                "junk header",
+                valid,
+                "2 00:00:00.020 1 2 3",
+                "3 00:00:00.030 1 2 3 4 0 0 1 0 0 0 0 0 0 EXTRA",
+                "4.5 00:00:00.040 1 2 3 4 0 0 1 0 0 0 0 0 0",
+                "-1 00:00:00.050 1 2 3 4 0 0 1 0 0 0 0 0 0",
+                valid_two + "   \t",
+            )
+        )
+        parsed = parse_stepwise_text(text)
+        pd.testing.assert_series_equal(
+            parsed["Sample"], pd.Series([0, 1], name="Sample"), check_exact=True
+        )
+
+    def test_special_line_separators_use_the_legacy_splitlines_path(self) -> None:
+        first = "0 00:00:00.000 1 2 3 4 0 0 1 0 0 0 0 0 0"
+        second = "1 00:00:00.010 1 2 3 4 0 0 1 0 0 0 0 0 0"
+        for separator in "\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+            with self.subTest(separator=repr(separator)), patch(
+                "stepwise.parsing.pd.read_csv", side_effect=AssertionError("fast path used")
+            ):
+                parsed = parse_stepwise_text(first + separator + second)
+            self.assertEqual(parsed["Sample"].tolist(), [0, 1])
 
     def test_parser_accepts_duplicate_timestamps_for_quality_gating(self) -> None:
         lines = FIXTURE.read_text(encoding="utf-8").splitlines()
