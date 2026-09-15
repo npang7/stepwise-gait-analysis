@@ -142,6 +142,19 @@ def test_one_stance_preserves_first_stride_and_swing_nan() -> None:
     _assert_frame_equivalent(actual, expected, float_atol=1e-9)
 
 
+def test_stance_window_boundaries_match_reference_without_mutating_input() -> None:
+    processed, _intervals = _processed_and_intervals(FIXTURES / "synthetic_1682.txt")
+    frame = processed.iloc[:40].copy()
+    before = frame.copy(deep=True)
+    intervals = [(0, 0), (4, 8), (12, 21), (25, 37)]
+
+    actual = extract_stance_features(frame, intervals)
+    expected = reference_extract_stance_features(frame, intervals)
+
+    pd.testing.assert_frame_equal(frame, before, check_exact=True)
+    _assert_frame_equivalent(actual, expected, float_atol=1e-9)
+
+
 @pytest.mark.parametrize("fixture_name", PIPELINE_FIXTURES)
 def test_reference_processed_csv_roundtrip_matches_current_path(
     fixture_name: str, tmp_path: Path
