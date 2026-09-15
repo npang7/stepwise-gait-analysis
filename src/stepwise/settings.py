@@ -10,7 +10,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
-    max_upload_bytes: int = 2 * 1024 * 1024
+    max_upload_bytes: int = 64 * 1024 * 1024
     analysis_timeout_seconds: float = 120.0
     max_workers: int = 2
     max_queue: int = 8
@@ -33,7 +33,7 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             data_dir=Path(os.getenv("STEPWISE_DATA_DIR", "stepwise-data")),
-            max_upload_bytes=int(os.getenv("STEPWISE_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))),
+            max_upload_bytes=int(os.getenv("STEPWISE_MAX_UPLOAD_BYTES", str(64 * 1024 * 1024))),
             analysis_timeout_seconds=float(
                 os.getenv("STEPWISE_ANALYSIS_TIMEOUT_SECONDS", "120")
             ),

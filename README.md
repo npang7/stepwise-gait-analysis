@@ -84,7 +84,10 @@ curl -X POST http://127.0.0.1:8080/api/v1/analyses \
   -F 'sensor_mapping={"heel":"P2","arch":"P3","medial_forefoot":"P4","lateral_forefoot":"P1","pitch_eversion_sign":"positive"}'
 ```
 
-The server returns `202 Accepted`, a UUID, a status URL, and a result URL. Poll the status resource until `succeeded` or `failed`, then fetch strict JSON and the allowlisted artifacts.
+Uploads stream in 64 KiB chunks to temporary files under `STEPWISE_DATA_DIR/.staging`.
+Validation runs off the event loop before the server returns `202 Accepted`; successful inputs
+move atomically into the UUID run directory. Poll the status resource until `succeeded` or
+`failed`, then fetch strict JSON and the allowlisted artifacts.
 
 ### API routes
 
@@ -114,13 +117,15 @@ Important status codes include `413` for oversized uploads, `422` for invalid te
 | Variable | Default | Purpose |
 |---|---:|---|
 | `STEPWISE_DATA_DIR` | `./stepwise-data` | UUID run directories and artifacts |
-| `STEPWISE_MAX_UPLOAD_BYTES` | `2097152` | Maximum bytes per uploaded recording |
+| `STEPWISE_MAX_UPLOAD_BYTES` | `67108864` | Maximum bytes per uploaded recording |
 | `STEPWISE_ANALYSIS_TIMEOUT_SECONDS` | `120` | Hard worker timeout |
 | `STEPWISE_MAX_WORKERS` | `2` | Concurrent analysis processes |
 | `STEPWISE_MAX_QUEUE` | `8` | Waiting jobs before `429` |
 | `STEPWISE_RESULT_TTL_HOURS` | `24` | Terminal-result retention |
 
-On startup, successful jobs remain available and incomplete jobs become `failed/service_restarted`. Expired terminal jobs are removed at startup and when the service creates work.
+On startup, stale staged uploads are removed, successful jobs remain available, and incomplete
+jobs become `failed/service_restarted`. Expired terminal jobs are removed at startup and when
+the service creates work.
 
 ## WeChat Mini Program
 

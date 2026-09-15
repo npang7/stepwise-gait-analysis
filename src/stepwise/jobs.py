@@ -93,7 +93,7 @@ class JobManager:
         max_workers: int = 2,
         max_queue: int = 8,
         timeout_seconds: float = 120.0,
-        max_upload_bytes: int = 2 * 1024 * 1024,
+        max_upload_bytes: int = 64 * 1024 * 1024,
         result_ttl_hours: float = 24.0,
         runner: Runner = _run_analysis,
     ) -> None:
