@@ -59,8 +59,9 @@ def test_markdown_has_one_median_row_per_size() -> None:
 def test_marker_append_keeps_pipeline_table_last_and_preserves_phase_one(tmp_path) -> None:
     log = tmp_path / "BENCHMARKS.md"
     phase_one = "## Phase 1 upload measurements\n\n| upload | value |\n|---|---:|\n| rss | 1 |\n\n"
+    historical_note = "> Historical TOTAL rows are not directly comparable.\n\n"
     pipeline = (
-        "## Pipeline measurements\n\n"
+        "## Back-to-back pipeline measurements (section 5.3 onward)\n\n"
         "| date | commit | samples | total s | note |\n"
         "|---|---|---:|---:|---|\n"
         "| OLD | abc | 100 | 1.00 | baseline |\n"
@@ -68,6 +69,7 @@ def test_marker_append_keeps_pipeline_table_last_and_preserves_phase_one(tmp_pat
     log.write_text(
         "# StepWise benchmarks\n\n"
         + phase_one
+        + historical_note
         + pipeline
         + bench_stepwise.BENCHMARK_APPEND_MARKER,
         encoding="utf-8",
@@ -78,8 +80,9 @@ def test_marker_append_keeps_pipeline_table_last_and_preserves_phase_one(tmp_pat
 
     content = log.read_text(encoding="utf-8")
     assert content.count(phase_one) == 1
+    assert content.count(historical_note) == 1
     assert content.index("## Phase 1 upload measurements") < content.index(
-        "## Pipeline measurements"
+        "## Back-to-back pipeline measurements"
     )
     assert content.index("| OLD |") < content.index("| NEW1 |") < content.index("| NEW2 |")
     assert content.endswith(bench_stepwise.BENCHMARK_APPEND_MARKER)

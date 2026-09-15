@@ -28,4 +28,16 @@ The full protocol, dependency metadata, source commits, and submission timings a
 | 20260915-195234 | cd64bdf | 30000 | 2.29 | median of 3 after 1 warmup, spread 3.5% |
 | 20260915-195234 | cd64bdf | 180000 | 10.93 | median of 3 after 1 warmup, spread 3.5% |
 | 20260915-195234 | cd64bdf | 360000 | 21.62 | median of 3 after 1 warmup, spread 0.9% |
+
+> The section 5.2 `stance_features` result is valid (2.8814 s to 0.4306 s at 360,000
+> samples). Its TOTAL is not directly comparable with the Phase 0 warm-up baseline: the
+> sessions were about 20 hours apart, and the untouched parse, features_basic, segment,
+> and artifacts stages measured 0.7%, 5.1%, 9.1%, and 6.4% slower respectively at 360,000
+> samples, indicating machine-state drift. Starting with section 5.3, before and after are
+> measured back to back in the same session.
+
+## Back-to-back pipeline measurements (section 5.3 onward)
+
+| date | commit | samples | total s | note |
+|---|---|---:|---:|---|
 <!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->
