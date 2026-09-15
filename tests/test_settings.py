@@ -17,7 +17,7 @@ class SettingsTests(unittest.TestCase):
     def test_defaults_match_the_public_service_contract(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings.from_env()
-        self.assertEqual(settings.max_upload_bytes, 2 * 1024 * 1024)
+        self.assertEqual(settings.max_upload_bytes, 64 * 1024 * 1024)
         self.assertEqual(settings.analysis_timeout_seconds, 120.0)
         self.assertEqual(settings.max_workers, 2)
         self.assertEqual(settings.max_queue, 8)

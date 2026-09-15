@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Self
 
 from .models import AnalysisConfig, JobManifest, SensorMapping
-from .parsing import InputValidationError, parse_stepwise_bytes
+from .parsing import InputValidationError, validate_stepwise_path
 from .service import AnalysisService
 from .storage import JobRepository
 
@@ -93,7 +93,7 @@ class JobManager:
         max_workers: int = 2,
         max_queue: int = 8,
         timeout_seconds: float = 120.0,
-        max_upload_bytes: int = 2 * 1024 * 1024,
+        max_upload_bytes: int = 64 * 1024 * 1024,
         result_ttl_hours: float = 24.0,
         runner: Runner = _run_analysis,
     ) -> None:
@@ -109,7 +109,9 @@ class JobManager:
         self._pending: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=max_queue)
         self._active: dict[str, _ActiveJob] = {}
         self._lock = threading.RLock()
+        self._submission_lock = threading.Lock()
         self._stop = threading.Event()
+        self.repository.cleanup_staging()
         self.repository.recover_incomplete()
         self.repository.cleanup_expired(result_ttl_hours)
         self._thread = threading.Thread(
@@ -124,16 +126,41 @@ class JobManager:
         with self._lock:
             return len(self._active)
 
-    def _validate_upload(self, payload: bytes) -> None:
-        if len(payload) > self.max_upload_bytes:
+    def _validate_upload(self, path: Path) -> None:
+        if path.stat().st_size > self.max_upload_bytes:
             raise SubmissionError(
                 "upload_too_large",
                 f"each recording must be at most {self.max_upload_bytes} bytes",
             )
         try:
-            parse_stepwise_bytes(payload)
+            validate_stepwise_path(path)
         except InputValidationError as exc:
             raise SubmissionError(exc.code, str(exc)) from exc
+
+    def submit_staged(
+        self,
+        walking: Path,
+        standing: Path | None,
+        config: AnalysisConfig,
+    ) -> JobManifest:
+        self._validate_upload(walking)
+        if standing is not None:
+            self._validate_upload(standing)
+        with self._submission_lock:
+            self.repository.cleanup_expired(self.result_ttl_hours)
+            manifest = self.repository.create()
+            try:
+                self.repository.move_staged_input(manifest.run_id, "walking.txt", walking)
+                if standing is not None:
+                    self.repository.move_staged_input(manifest.run_id, "standing.txt", standing)
+                self._pending.put_nowait((manifest.run_id, asdict(config)))
+            except queue.Full as exc:
+                self.repository.delete_run(manifest.run_id)
+                raise QueueFullError("analysis queue is full") from exc
+            except Exception:
+                self.repository.delete_run(manifest.run_id)
+                raise
+            return manifest
 
     def submit(
         self,
@@ -141,25 +168,17 @@ class JobManager:
         standing: bytes | None,
         config: AnalysisConfig,
     ) -> JobManifest:
-        self._validate_upload(walking)
-        if standing is not None:
-            self._validate_upload(standing)
-        self.repository.cleanup_expired(self.result_ttl_hours)
-        manifest = self.repository.create()
-        self.repository.write_input(manifest.run_id, "walking.txt", walking)
-        if standing is not None:
-            self.repository.write_input(manifest.run_id, "standing.txt", standing)
-        config_payload = asdict(config)
+        walking_path = self.repository.new_staging_path()
+        standing_path = self.repository.new_staging_path() if standing is not None else None
         try:
-            self._pending.put_nowait((manifest.run_id, config_payload))
-        except queue.Full as exc:
-            self.repository.mark_failed(
-                manifest.run_id,
-                "queue_full",
-                "The analysis queue is full; retry later.",
-            )
-            raise QueueFullError("analysis queue is full") from exc
-        return manifest
+            walking_path.write_bytes(walking)
+            if standing_path is not None and standing is not None:
+                standing_path.write_bytes(standing)
+            return self.submit_staged(walking_path, standing_path, config)
+        finally:
+            self.repository.remove_staged(walking_path)
+            if standing_path is not None:
+                self.repository.remove_staged(standing_path)
 
     def _start_pending(self) -> None:
         while not self._stop.is_set():
