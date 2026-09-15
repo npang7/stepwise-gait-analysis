@@ -40,4 +40,14 @@ The full protocol, dependency metadata, source commits, and submission timings a
 
 | date | commit | samples | total s | note |
 |---|---|---:|---:|---|
+| 20260915-211042 | 33faa78 | 1682 | 0.52 | median of 3 after 1 warmup, spread 4.4% |
+| 20260915-211042 | 33faa78 | 6000 | 0.87 | median of 3 after 1 warmup, spread 9.6% |
+| 20260915-211042 | 33faa78 | 30000 | 2.69 | median of 3 after 1 warmup, spread 19.7% |
+| 20260915-211042 | 33faa78 | 180000 | 11.83 | median of 3 after 1 warmup, spread 2.3% |
+| 20260915-211042 | 33faa78 | 360000 | 23.44 | median of 3 after 1 warmup, spread 4.4% |
+| 20260915-211359 | 5af25b5 | 1682 | 0.48 | median of 3 after 1 warmup, spread 3.1% |
+| 20260915-211359 | 5af25b5 | 6000 | 0.78 | median of 3 after 1 warmup, spread 6.1% |
+| 20260915-211359 | 5af25b5 | 30000 | 2.30 | median of 3 after 1 warmup, spread 1.6% |
+| 20260915-211359 | 5af25b5 | 180000 | 21.98 | median of 3 after 1 warmup, spread 63.0% |
+| 20260915-211359 | 5af25b5 | 360000 | 22.55 | median of 3 after 1 warmup, spread 2.7% |
 <!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->

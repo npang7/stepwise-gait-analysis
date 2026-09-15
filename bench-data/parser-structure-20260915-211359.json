@@ -1,0 +1,196 @@
+{
+  "timestamp": "2026-09-15T21:18:03.022419+00:00",
+  "commit": "5af25b5",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.11.7",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3"
+  },
+  "repeat": 3,
+  "warmup": 1,
+  "method": {
+    "regex": "_contains_special_line_separator over the complete decoded text",
+    "filter": "_filter_stepwise_rows including empty-field mask, Sample isdigit mask, and filtered copy",
+    "combined": "regex_seconds + filter_seconds for each measured iteration"
+  },
+  "after_benchmark": "bench-data/baseline-20260915-211359.json",
+  "results": [
+    {
+      "samples": 1682,
+      "runs": [
+        {
+          "regex_seconds": 0.000343399999110261,
+          "filter_seconds": 0.0017886999994516373,
+          "combined_seconds": 0.0021320999985618982
+        },
+        {
+          "regex_seconds": 0.0003256999989389442,
+          "filter_seconds": 0.0018500000005587935,
+          "combined_seconds": 0.0021756999994977377
+        },
+        {
+          "regex_seconds": 0.00030590000096708536,
+          "filter_seconds": 0.0020398999986355193,
+          "combined_seconds": 0.0023457999996026047
+        }
+      ],
+      "summary": {
+        "regex_seconds": {
+          "median": 0.0003256999989389442,
+          "relative_range_percent": 11.513662347357076
+        },
+        "filter_seconds": {
+          "median": 0.0018500000005587935,
+          "relative_range_percent": 13.578378330162536
+        },
+        "combined_seconds": {
+          "median": 0.0021756999994977377,
+          "relative_range_percent": 9.82212626235415
+        },
+        "combined_percent_of_after_parse": 10.770792076721476
+      }
+    },
+    {
+      "samples": 6000,
+      "runs": [
+        {
+          "regex_seconds": 0.0010278000008838717,
+          "filter_seconds": 0.004391000002215151,
+          "combined_seconds": 0.005418800003099022
+        },
+        {
+          "regex_seconds": 0.0010453000031702686,
+          "filter_seconds": 0.004740199998195749,
+          "combined_seconds": 0.005785500001366017
+        },
+        {
+          "regex_seconds": 0.0011221000022487715,
+          "filter_seconds": 0.004517800000030547,
+          "combined_seconds": 0.005639900002279319
+        }
+      ],
+      "summary": {
+        "regex_seconds": {
+          "median": 0.0010453000031702686,
+          "relative_range_percent": 9.02133369165783
+        },
+        "filter_seconds": {
+          "median": 0.004517800000030547,
+          "relative_range_percent": 7.729425737709436
+        },
+        "combined_seconds": {
+          "median": 0.005639900002279319,
+          "relative_range_percent": 6.501888297998123
+        },
+        "combined_percent_of_after_parse": 9.431270906821604
+      }
+    },
+    {
+      "samples": 30000,
+      "runs": [
+        {
+          "regex_seconds": 0.005117799999425188,
+          "filter_seconds": 0.022098999997979263,
+          "combined_seconds": 0.02721679999740445
+        },
+        {
+          "regex_seconds": 0.004876299997704336,
+          "filter_seconds": 0.020661200000176905,
+          "combined_seconds": 0.02553749999788124
+        },
+        {
+          "regex_seconds": 0.00502520000009099,
+          "filter_seconds": 0.018432900000334485,
+          "combined_seconds": 0.023458100000425475
+        }
+      ],
+      "summary": {
+        "regex_seconds": {
+          "median": 0.00502520000009099,
+          "relative_range_percent": 4.805778908630074
+        },
+        "filter_seconds": {
+          "median": 0.020661200000176905,
+          "relative_range_percent": 17.743887081163674
+        },
+        "combined_seconds": {
+          "median": 0.02553749999788124,
+          "relative_range_percent": 14.718355349156425
+        },
+        "combined_percent_of_after_parse": 9.385336272650218
+      }
+    },
+    {
+      "samples": 180000,
+      "runs": [
+        {
+          "regex_seconds": 0.03437389999817242,
+          "filter_seconds": 0.11566280000261031,
+          "combined_seconds": 0.15003670000078273
+        },
+        {
+          "regex_seconds": 0.031645600000047125,
+          "filter_seconds": 0.11470069999995758,
+          "combined_seconds": 0.1463463000000047
+        },
+        {
+          "regex_seconds": 0.0315188999993552,
+          "filter_seconds": 0.1173211999994237,
+          "combined_seconds": 0.1488400999987789
+        }
+      ],
+      "summary": {
+        "regex_seconds": {
+          "median": 0.031645600000047125,
+          "relative_range_percent": 9.021791335329299
+        },
+        "filter_seconds": {
+          "median": 0.11566280000261031,
+          "relative_range_percent": 2.265637698038591
+        },
+        "combined_seconds": {
+          "median": 0.1488400999987789,
+          "relative_range_percent": 2.4794393451820467
+        },
+        "combined_percent_of_after_parse": 4.0006477797758
+      }
+    },
+    {
+      "samples": 360000,
+      "runs": [
+        {
+          "regex_seconds": 0.06497350000063307,
+          "filter_seconds": 0.23776429999998072,
+          "combined_seconds": 0.3027378000006138
+        },
+        {
+          "regex_seconds": 0.06522420000328566,
+          "filter_seconds": 0.23803620000035153,
+          "combined_seconds": 0.3032604000036372
+        },
+        {
+          "regex_seconds": 0.06284890000097221,
+          "filter_seconds": 0.23391190000256756,
+          "combined_seconds": 0.29676080000353977
+        }
+      ],
+      "summary": {
+        "regex_seconds": {
+          "median": 0.06497350000063307,
+          "relative_range_percent": 3.655798136610015
+        },
+        "filter_seconds": {
+          "median": 0.23776429999998072,
+          "relative_range_percent": 1.7346170126399545
+        },
+        "combined_seconds": {
+          "median": 0.3027378000006138,
+          "relative_range_percent": 2.146940355675518
+        },
+        "combined_percent_of_after_parse": 9.66194746754584
+      }
+    }
+  ]
+}

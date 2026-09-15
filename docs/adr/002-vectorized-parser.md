@@ -33,3 +33,8 @@ The permanent parser oracle compares every column, dtype and value exactly, incl
 large fixtures. Benchmark evidence records the whole-text search plus vectorized row filtering as a
 separate structural-correctness cost so that the performance tradeoff is measured rather than
 assumed.
+
+On the 360,000-sample measurement, the median whole-text regex search took 0.0650 seconds and the
+median empty-field/digit-mask/filter operation took 0.2378 seconds. Their combined median was 0.3027
+seconds, or 9.66% of the paired 3.133-second parse median. The committed measurement JSON contains
+all three raw runs and the corresponding results for every benchmark size.
