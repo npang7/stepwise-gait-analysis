@@ -130,6 +130,11 @@ class JobManagerTests(unittest.TestCase):
             manager.submit(FIXTURE_BYTES, None, AnalysisConfig())
             with self.assertRaises(QueueFullError):
                 manager.submit(FIXTURE_BYTES, None, AnalysisConfig())
+            run_directories = [
+                path for path in self.root.iterdir() if path.is_dir() and path.name != ".staging"
+            ]
+            self.assertEqual(len(run_directories), 2)
+            self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
         finally:
             manager.close()
 
@@ -174,6 +179,18 @@ class JobManagerTests(unittest.TestCase):
             )
             manager.submit(FIXTURE_BYTES, None, AnalysisConfig())
             self.assertFalse((self.root / expired.run_id).exists())
+        finally:
+            manager.close()
+
+    def test_manager_startup_removes_stale_staging_files(self) -> None:
+        repository = JobRepository(self.root)
+        stale = repository.new_staging_path()
+        stale.write_bytes(b"partial upload")
+
+        manager = JobManager(self.root, runner=successful_runner)
+        try:
+            self.assertFalse(stale.exists())
+            self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
         finally:
             manager.close()
 

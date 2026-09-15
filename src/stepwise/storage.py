@@ -34,6 +34,8 @@ class JobRepository:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self.staging_dir = self.root / ".staging"
+        self.staging_dir.mkdir(exist_ok=True)
 
     @staticmethod
     def _validate_run_id(run_id: str) -> str:
@@ -100,6 +102,44 @@ class JobRepository:
         temporary.write_bytes(content)
         temporary.replace(destination)
         return destination
+
+    def new_staging_path(self) -> Path:
+        return self.staging_dir / str(uuid.uuid4())
+
+    def _validate_staging_path(self, path: Path) -> Path:
+        resolved = path.resolve()
+        if resolved.parent != self.staging_dir or resolved == self.staging_dir:
+            raise ValueError("staging path must be a direct child of the staging directory")
+        return resolved
+
+    def remove_staged(self, path: Path) -> None:
+        resolved = self._validate_staging_path(path)
+        if resolved.is_dir():
+            shutil.rmtree(resolved)
+        else:
+            resolved.unlink(missing_ok=True)
+
+    def cleanup_staging(self) -> list[Path]:
+        removed: list[Path] = []
+        for path in sorted(self.staging_dir.iterdir()):
+            self.remove_staged(path)
+            removed.append(path)
+        return removed
+
+    def move_staged_input(self, run_id: str, name: str, staged: Path) -> Path:
+        if name not in {"walking.txt", "standing.txt"}:
+            raise ValueError("input name is not allowed")
+        source = self._validate_staging_path(staged)
+        destination = self.input_dir(run_id) / name
+        source.replace(destination)
+        return destination
+
+    def delete_run(self, run_id: str) -> None:
+        run_dir = self.run_dir(run_id).resolve()
+        if run_dir.parent != self.root or run_dir == self.root:
+            raise JobNotFoundError(run_id)
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
 
     def _transition(
         self,

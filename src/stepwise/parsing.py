@@ -81,3 +81,8 @@ def parse_stepwise_bytes(payload: bytes) -> pd.DataFrame:
 
 def parse_stepwise_txt(path: Path) -> pd.DataFrame:
     return parse_stepwise_bytes(path.read_bytes())
+
+
+def validate_stepwise_path(path: Path) -> None:
+    """Validate a staged recording through the canonical parser."""
+    parse_stepwise_txt(path)

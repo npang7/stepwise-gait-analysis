@@ -1,23 +1,38 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from stepwise.api import create_app
-from stepwise.jobs import JobManager
+from stepwise.api import UPLOAD_CHUNK_BYTES, _stream_upload, create_app
+from stepwise.jobs import JobManager, SubmissionError
 from stepwise.settings import Settings
 from tests.test_jobs import slow_runner, successful_runner
 
 FIXTURE_BYTES = (ROOT / "tests" / "fixtures" / "minimal_walk.txt").read_bytes()
+
+
+class ChunkUpload:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+        self.reads = 0
+
+    async def read(self, size: int) -> bytes:
+        assert size == UPLOAD_CHUNK_BYTES
+        self.reads += 1
+        return self.chunks.pop(0) if self.chunks else b""
 
 
 def wait_for_api_terminal(client: TestClient, status_url: str, timeout: float = 8.0) -> dict:
@@ -71,6 +86,10 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 202)
                 created = response.json()
                 self.assertEqual(created["status"], "queued")
+                self.assertEqual(
+                    (manager.repository.input_dir(created["run_id"]) / "walking.txt").read_bytes(),
+                    FIXTURE_BYTES,
+                )
                 self.assertEqual(
                     created["status_url"], f"/api/v1/analyses/{created['run_id']}"
                 )
@@ -162,6 +181,7 @@ class ApiTests(unittest.TestCase):
                 )
                 self.assertEqual(binary.status_code, 422)
                 self.assertEqual(binary.json()["error"]["code"], "binary_input")
+                self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
 
                 duplicate_mapping = client.post(
                     "/api/v1/analyses",
@@ -202,6 +222,13 @@ class ApiTests(unittest.TestCase):
                 )
                 self.assertEqual(full.status_code, 429)
                 self.assertEqual(full.json()["error"]["code"], "queue_full")
+                self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
+                run_directories = [
+                    path
+                    for path in self.data_dir.iterdir()
+                    if path.is_dir() and path.name != ".staging"
+                ]
+                self.assertEqual(len(run_directories), 2)
         finally:
             manager.close()
 
@@ -224,8 +251,77 @@ class ApiTests(unittest.TestCase):
                 )
                 self.assertEqual(too_large.status_code, 413)
                 self.assertEqual(too_large.json()["error"]["code"], "upload_too_large")
+                self.assertEqual(list(small_manager.repository.staging_dir.iterdir()), [])
         finally:
             small_manager.close()
+
+
+class StreamingUploadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_streamed_write_preserves_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            destination = Path(temporary_directory) / "upload"
+            upload = ChunkUpload([b"abc", b"def"])
+
+            written = await _stream_upload(upload, destination, limit=6)
+
+            self.assertEqual(written, 6)
+            self.assertEqual(destination.read_bytes(), b"abcdef")
+
+    async def test_stream_stops_at_cap_without_reading_remainder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            destination = Path(temporary_directory) / "upload"
+            upload = ChunkUpload([b"abcd", b"efgh", b"unread"])
+
+            with self.assertRaisesRegex(SubmissionError, "upload_too_large"):
+                await _stream_upload(upload, destination, limit=6)
+
+            self.assertEqual(upload.reads, 2)
+            self.assertEqual(destination.read_bytes(), b"abcd")
+
+    async def test_health_remains_responsive_during_blocking_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_dir = Path(temporary_directory)
+            settings = Settings(
+                data_dir=data_dir,
+                max_upload_bytes=2 * 1024 * 1024,
+                analysis_timeout_seconds=3,
+                max_workers=1,
+                max_queue=2,
+                result_ttl_hours=24,
+            )
+            manager = JobManager(data_dir, runner=successful_runner)
+            validation_started = threading.Event()
+            release_validation = threading.Event()
+
+            def slow_validation(_path: Path) -> None:
+                validation_started.set()
+                release_validation.wait(timeout=2)
+
+            try:
+                transport = httpx.ASGITransport(app=create_app(settings, manager=manager))
+                with patch("stepwise.jobs.validate_stepwise_path", side_effect=slow_validation):
+                    async with httpx.AsyncClient(
+                        transport=transport, base_url="http://test"
+                    ) as client:
+                        upload_task = asyncio.create_task(
+                            client.post(
+                                "/api/v1/analyses",
+                                files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                            )
+                        )
+                        started = await asyncio.to_thread(validation_started.wait, 1)
+                        self.assertTrue(started)
+                        start = time.monotonic()
+                        health = await client.get("/healthz")
+                        elapsed = time.monotonic() - start
+                        release_validation.set()
+                        created = await upload_task
+                self.assertEqual(health.status_code, 200)
+                self.assertLess(elapsed, 0.25)
+                self.assertEqual(created.status_code, 202)
+            finally:
+                release_validation.set()
+                manager.close()
 
 
 if __name__ == "__main__":

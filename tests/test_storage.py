@@ -63,6 +63,27 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertEqual(json.loads(manifest_path.read_text(encoding="utf-8"))["status"], "succeeded")
         self.assertFalse((manifest_path.parent / "manifest.json.tmp").exists())
 
+    def test_staging_files_move_atomically_and_startup_cleanup_removes_stale_files(self) -> None:
+        staged = self.repository.new_staging_path()
+        staged.write_bytes(b"sample")
+        manifest = self.repository.create()
+
+        destination = self.repository.move_staged_input(manifest.run_id, "walking.txt", staged)
+
+        self.assertEqual(destination.read_bytes(), b"sample")
+        self.assertFalse(staged.exists())
+        stale = self.repository.new_staging_path()
+        stale.write_bytes(b"stale")
+        self.assertEqual(self.repository.cleanup_staging(), [stale])
+        self.assertEqual(list(self.repository.staging_dir.iterdir()), [])
+
+    def test_delete_run_removes_an_unobservable_rejected_submission(self) -> None:
+        manifest = self.repository.create()
+
+        self.repository.delete_run(manifest.run_id)
+
+        self.assertFalse(self.repository.run_dir(manifest.run_id).exists())
+
     def test_restart_recovery_marks_only_incomplete_jobs_failed(self) -> None:
         queued = self.repository.create()
         running = self.repository.create()
