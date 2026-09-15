@@ -40,9 +40,11 @@ jobs:
           - boundary: lowest
             numpy_spec: "numpy==1.26.0"
             pandas_spec: "pandas==2.1.0"
+            pyarrow_spec: "pyarrow==14.0.0"
           - boundary: highest
             numpy_spec: "numpy>=1.26,<2.4"
             pandas_spec: "pandas>=2.1,<3"
+            pyarrow_spec: "pyarrow>=14,<26"
     name: dependency-bounds (${{ matrix.boundary }})
     steps:
       - uses: actions/checkout@v4
@@ -55,12 +57,14 @@ jobs:
           python -m pip install -e ".[dev]"
           "${{ matrix.numpy_spec }}"
           "${{ matrix.pandas_spec }}"
+          "${{ matrix.pyarrow_spec }}"
       - name: Report resolved versions
         run: >-
-          python -c "import platform, numpy, pandas;
+          python -c "import platform, numpy, pandas, pyarrow;
           print('python=' + platform.python_version());
           print('numpy=' + numpy.__version__);
-          print('pandas=' + pandas.__version__)"
+          print('pandas=' + pandas.__version__);
+          print('pyarrow=' + pyarrow.__version__)"
       - name: Python tests and coverage
         run: pytest --cov=stepwise --cov-report=term-missing
 
