@@ -1,23 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 import httpx
+import pandas as pd
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from stepwise.api import UPLOAD_CHUNK_BYTES, _stream_upload, create_app
+from stepwise.api import (
+    DOWNLOAD_CHUNK_BYTES,
+    UPLOAD_CHUNK_BYTES,
+    _leased_file_chunks,
+    _stream_upload,
+    create_app,
+)
 from stepwise.jobs import JobManager, SubmissionError
+from stepwise.reporting import materialize_processed_csv
 from stepwise.settings import Settings
 from tests.test_jobs import slow_runner, successful_runner
 
@@ -136,6 +147,199 @@ class ApiTests(unittest.TestCase):
                 )
                 self.assertEqual(report.status_code, 200)
                 self.assertIn("StepWise gait screening report", report.text)
+        finally:
+            manager.close()
+
+    def test_processed_csv_is_materialized_once_and_manifest_stays_terminal(self) -> None:
+        manager = JobManager(self.data_dir, max_workers=1, max_queue=1, timeout_seconds=20)
+        try:
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                created = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                ).json()
+                wait_for_api_terminal(client, created["status_url"], timeout=20)
+                result_url = created["result_url"]
+                result_before = client.get(result_url).json()
+                csv_artifact = next(
+                    item
+                    for item in result_before["artifacts"]
+                    if item["name"] == "processed_gait_data.csv"
+                )
+                self.assertEqual(csv_artifact["size_bytes"], 0)
+                run_id = created["run_id"]
+                artifact_dir = manager.repository.artifact_dir(run_id)
+                csv_path = artifact_dir / "processed_gait_data.csv"
+                parquet_path = artifact_dir / "processed_gait_data.parquet"
+                self.assertTrue(parquet_path.is_file())
+                self.assertFalse(csv_path.exists())
+                manifest_path = manager.repository.run_dir(run_id) / "manifest.json"
+                manifest_before = manifest_path.read_bytes()
+                updated_before = manager.repository.get(run_id).updated_at
+
+                response = client.get(
+                    f"/api/v1/analyses/{run_id}/artifacts/processed_gait_data.csv"
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(int(response.headers["content-length"]), len(response.content))
+                expected_path = artifact_dir / "expected.csv"
+                pd.read_parquet(parquet_path).to_csv(expected_path, index=False)
+                self.assertEqual(response.content, expected_path.read_bytes())
+                expected_path.unlink()
+                self.assertEqual(manifest_path.read_bytes(), manifest_before)
+                self.assertEqual(manager.repository.get(run_id).updated_at, updated_before)
+                self.assertEqual(
+                    next(
+                        item
+                        for item in client.get(result_url).json()["artifacts"]
+                        if item["name"] == "processed_gait_data.csv"
+                    )["size_bytes"],
+                    0,
+                )
+                with patch("stepwise.api.materialize_processed_csv") as materialize:
+                    cached = client.get(
+                        f"/api/v1/analyses/{run_id}/artifacts/processed_gait_data.csv"
+                    )
+                self.assertEqual(cached.content, response.content)
+                materialize.assert_not_called()
+                self.assertEqual(
+                    client.get(
+                        f"/api/v1/analyses/{run_id}/artifacts/processed_gait_data.parquet"
+                    ).status_code,
+                    404,
+                )
+        finally:
+            manager.close()
+
+    def test_concurrent_processed_csv_requests_publish_one_complete_cache(self) -> None:
+        manager = JobManager(self.data_dir, max_workers=1, max_queue=1, timeout_seconds=20)
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def delayed_materialize(path: Path) -> Path:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return materialize_processed_csv(path)
+
+        try:
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                created = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                ).json()
+                wait_for_api_terminal(client, created["status_url"], timeout=20)
+                url = (
+                    f"/api/v1/analyses/{created['run_id']}"
+                    "/artifacts/processed_gait_data.csv"
+                )
+                with (
+                    patch("stepwise.api.materialize_processed_csv", delayed_materialize),
+                    concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor,
+                ):
+                    first = executor.submit(client.get, url)
+                    self.assertTrue(entered.wait(5))
+                    second = executor.submit(client.get, url)
+                    release.set()
+                    responses = (first.result(timeout=10), second.result(timeout=10))
+                self.assertEqual(calls, 1)
+                self.assertTrue(all(response.status_code == 200 for response in responses))
+                self.assertEqual(responses[0].content, responses[1].content)
+                artifact_dir = manager.repository.artifact_dir(created["run_id"])
+                self.assertEqual(list(artifact_dir.glob(".processed_gait_data.csv.*.tmp")), [])
+        finally:
+            manager.close()
+
+    def test_ttl_cleanup_skips_materialization_then_removes_the_completed_download(self) -> None:
+        manager = JobManager(self.data_dir, max_workers=1, max_queue=1, timeout_seconds=20)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def delayed_materialize(path: Path) -> Path:
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return materialize_processed_csv(path)
+
+        try:
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                created = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                ).json()
+                wait_for_api_terminal(client, created["status_url"], timeout=20)
+                run_id = created["run_id"]
+                now = datetime(2026, 9, 15, tzinfo=UTC)
+                old = (now - timedelta(hours=25)).isoformat()
+                manager.repository.save(replace(manager.repository.get(run_id), updated_at=old))
+                url = f"/api/v1/analyses/{run_id}/artifacts/processed_gait_data.csv"
+                with (
+                    patch("stepwise.api.materialize_processed_csv", delayed_materialize),
+                    concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor,
+                ):
+                    response_future = executor.submit(client.get, url)
+                    self.assertTrue(entered.wait(5))
+                    self.assertEqual(manager.repository.cleanup_expired(24, now=now), [])
+                    self.assertTrue(manager.repository.run_dir(run_id).is_dir())
+                    release.set()
+                    self.assertEqual(response_future.result(timeout=10).status_code, 200)
+                self.assertEqual(manager.repository.cleanup_expired(24, now=now), [run_id])
+                self.assertEqual(client.get(url).status_code, 404)
+        finally:
+            manager.close()
+
+    def test_processed_csv_generation_failure_releases_ttl_lease(self) -> None:
+        manager = JobManager(self.data_dir, max_workers=1, max_queue=1, timeout_seconds=20)
+        try:
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                created = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                ).json()
+                wait_for_api_terminal(client, created["status_url"], timeout=20)
+                run_id = created["run_id"]
+                now = datetime(2026, 9, 15, tzinfo=UTC)
+                old = (now - timedelta(hours=25)).isoformat()
+                manager.repository.save(replace(manager.repository.get(run_id), updated_at=old))
+                with patch(
+                    "stepwise.api.materialize_processed_csv", side_effect=OSError("disk full")
+                ):
+                    response = client.get(
+                        f"/api/v1/analyses/{run_id}/artifacts/processed_gait_data.csv"
+                    )
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.json()["error"]["code"], "artifact_generation_failed")
+                self.assertEqual(manager.repository.cleanup_expired(24, now=now), [run_id])
+        finally:
+            manager.close()
+
+    def test_interrupted_stream_releases_artifact_lease(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            manifest = manager.repository.create()
+            now = datetime(2026, 9, 15, tzinfo=UTC)
+            old = (now - timedelta(hours=25)).isoformat()
+            manager.repository.save(
+                replace(
+                    manifest,
+                    status="succeeded",
+                    updated_at=old,
+                    result={"summary": {}, "metrics": {}, "risk_cards": [], "artifacts": []},
+                )
+            )
+            path = manager.repository.artifact_dir(manifest.run_id) / "large.csv"
+            path.write_bytes(b"x" * (DOWNLOAD_CHUNK_BYTES + 1))
+            lease = manager.repository.acquire_artifact_lease(manifest.run_id)
+            stream = _leased_file_chunks(path, lease)
+
+            self.assertEqual(len(next(stream)), DOWNLOAD_CHUNK_BYTES)
+            self.assertEqual(manager.repository.cleanup_expired(24, now=now), [])
+            stream.close()
+
+            self.assertEqual(
+                manager.repository.cleanup_expired(24, now=now), [manifest.run_id]
+            )
         finally:
             manager.close()
 

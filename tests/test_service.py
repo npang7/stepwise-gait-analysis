@@ -47,8 +47,21 @@ class AnalysisServiceTests(unittest.TestCase):
                 "reference_metric_comparison.csv",
             }
             self.assertEqual({artifact.name for artifact in result.artifacts}, expected)
-            self.assertEqual({path.name for path in output_dir.iterdir()}, expected)
-            self.assertTrue(all(artifact.size_bytes > 0 for artifact in result.artifacts))
+            expected_eager_files = (expected - {"processed_gait_data.csv"}) | {
+                "processed_gait_data.parquet"
+            }
+            self.assertEqual({path.name for path in output_dir.iterdir()}, expected_eager_files)
+            artifact_sizes = {
+                artifact.name: artifact.size_bytes for artifact in result.artifacts
+            }
+            self.assertEqual(artifact_sizes["processed_gait_data.csv"], 0)
+            self.assertTrue(
+                all(
+                    size > 0
+                    for name, size in artifact_sizes.items()
+                    if name != "processed_gait_data.csv"
+                )
+            )
 
             serialized = json.dumps(result.to_dict(), allow_nan=False)
             self.assertNotIn("NaN", serialized)

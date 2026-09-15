@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -18,6 +19,21 @@ class JobNotFoundError(LookupError):
 
 class ArtifactNotFoundError(LookupError):
     pass
+
+
+class ArtifactLease:
+    """Keep one run visible to an in-flight artifact response."""
+
+    def __init__(self, repository: JobRepository, run_id: str) -> None:
+        self._repository = repository
+        self.run_id = run_id
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._repository._release_artifact_lease(self.run_id)
+        self._released = True
 
 
 def _utc_now() -> datetime:
@@ -36,6 +52,9 @@ class JobRepository:
         self.root.mkdir(parents=True, exist_ok=True)
         self.staging_dir = self.root / ".staging"
         self.staging_dir.mkdir(exist_ok=True)
+        self._artifact_guard = threading.RLock()
+        self._active_artifact_leases: dict[str, int] = {}
+        self._artifact_locks = tuple(threading.Lock() for _ in range(32))
 
     @staticmethod
     def _validate_run_id(run_id: str) -> str:
@@ -193,7 +212,7 @@ class JobRepository:
                 recovered.append(manifest.run_id)
         return recovered
 
-    def artifact_path(self, run_id: str, name: str) -> Path:
+    def artifact_destination(self, run_id: str, name: str) -> Path:
         if not name or Path(name).name != name or "/" in name or "\\" in name:
             raise ArtifactNotFoundError(name)
         manifest = self.get(run_id)
@@ -201,10 +220,33 @@ class JobRepository:
         allowed = {item.get("name") for item in artifacts if isinstance(item, dict)}
         if name not in allowed:
             raise ArtifactNotFoundError(name)
-        path = self.artifact_dir(run_id) / name
+        return self.artifact_dir(run_id) / name
+
+    def artifact_path(self, run_id: str, name: str) -> Path:
+        path = self.artifact_destination(run_id, name)
         if not path.is_file():
             raise ArtifactNotFoundError(name)
         return path
+
+    def artifact_materialization_lock(self, run_id: str, name: str) -> threading.Lock:
+        index = hash((run_id, name)) % len(self._artifact_locks)
+        return self._artifact_locks[index]
+
+    def acquire_artifact_lease(self, run_id: str) -> ArtifactLease:
+        with self._artifact_guard:
+            self.get(run_id)
+            self._active_artifact_leases[run_id] = (
+                self._active_artifact_leases.get(run_id, 0) + 1
+            )
+        return ArtifactLease(self, run_id)
+
+    def _release_artifact_lease(self, run_id: str) -> None:
+        with self._artifact_guard:
+            count = self._active_artifact_leases.get(run_id, 0)
+            if count <= 1:
+                self._active_artifact_leases.pop(run_id, None)
+            else:
+                self._active_artifact_leases[run_id] = count - 1
 
     def cleanup_expired(
         self,
@@ -220,16 +262,21 @@ class JobRepository:
         for path in sorted(self.root.iterdir()):
             if not path.is_dir():
                 continue
-            try:
-                manifest = self.get(path.name)
-                updated_at = datetime.fromisoformat(manifest.updated_at)
-            except (JobNotFoundError, ValueError):
-                continue
-            if manifest.status not in {"succeeded", "failed"} or updated_at >= cutoff:
-                continue
-            resolved = path.resolve()
-            if resolved.parent != self.root or resolved == self.root:
-                continue
-            shutil.rmtree(resolved)
-            removed.append(manifest.run_id)
+            with self._artifact_guard:
+                try:
+                    manifest = self.get(path.name)
+                    updated_at = datetime.fromisoformat(manifest.updated_at)
+                except (JobNotFoundError, ValueError):
+                    continue
+                if (
+                    manifest.status not in {"succeeded", "failed"}
+                    or updated_at >= cutoff
+                    or self._active_artifact_leases.get(manifest.run_id, 0) > 0
+                ):
+                    continue
+                resolved = path.resolve()
+                if resolved.parent != self.root or resolved == self.root:
+                    continue
+                shutil.rmtree(resolved)
+                removed.append(manifest.run_id)
         return removed
