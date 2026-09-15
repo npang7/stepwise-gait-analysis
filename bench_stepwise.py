@@ -5,6 +5,7 @@ Drop this at the repo root and run:
     python bench_stepwise.py                  # default sizes
     python bench_stepwise.py --sizes 1682 360000
     python bench_stepwise.py --compare        # also run the optimisation prototypes
+    python bench_stepwise.py --warmup 0       # disable the default discarded warm-up
 
 Writes bench-data/baseline-<date>.json and appends a row to BENCHMARKS.md so every
 number you later put on a resume is traceable to a commit and a machine.
@@ -315,11 +316,14 @@ def print_table(rows: list[dict]) -> None:
     print("=" * len(width))
 
 
-def benchmark_markdown_rows(stamp: str, commit: str, summaries: list[dict], repeat: int) -> list[str]:
+def benchmark_markdown_rows(
+    stamp: str, commit: str, summaries: list[dict], repeat: int, warmup: int
+) -> list[str]:
     lines = []
     for row in summaries:
-        note = "" if repeat == 1 else (
-            f"median of {repeat}, spread {row['total_relative_range_percent']:.1f}%"
+        note = "" if repeat == 1 and warmup == 0 else (
+            f"median of {repeat} after {warmup} warmup, "
+            f"spread {row['total_relative_range_percent']:.1f}%"
         )
         lines.append(
             f"| {stamp} | {commit} | {row['samples']} | "
@@ -344,10 +348,18 @@ class Tee(io.TextIOBase):
 
 
 def run(args: argparse.Namespace, stamp: str) -> None:
-    runs: list[list[dict]] = []
-    for run_index in range(args.repeat):
-        rows = [bench_one(n, ROOT) for n in args.sizes]
-        runs.append(rows)
+    runs: list[list[dict]] = [[] for _ in range(args.repeat)]
+    for size in args.sizes:
+        for warmup_index in range(args.warmup):
+            bench_one(size, ROOT)
+            print(
+                f"\nDiscarded warmup {warmup_index + 1}/{args.warmup} "
+                f"for {size} samples"
+            )
+        for run_index in range(args.repeat):
+            runs[run_index].append(bench_one(size, ROOT))
+
+    for run_index, rows in enumerate(runs):
         if args.repeat > 1:
             print(f"\nRaw run {run_index + 1}/{args.repeat}")
         print_table(rows)
@@ -372,6 +384,7 @@ def run(args: argparse.Namespace, stamp: str) -> None:
             "pandas": pd.__version__,
         },
         "repeat": args.repeat,
+        "warmup": args.warmup,
         "runs": [
             {"run": run_index + 1, "results": rows}
             for run_index, rows in enumerate(runs)
@@ -389,22 +402,35 @@ def run(args: argparse.Namespace, stamp: str) -> None:
                        "| date | commit | samples | total s | note |\n"
                        "|---|---|---:|---:|---|\n", encoding="utf-8")
     with log.open("a", encoding="utf-8") as handle:
-        handle.writelines(benchmark_markdown_rows(stamp, record["commit"], summaries, args.repeat))
+        handle.writelines(
+            benchmark_markdown_rows(
+                stamp, record["commit"], summaries, args.repeat, args.warmup
+            )
+        )
 
     print(f"\nwrote {target} and appended {len(summaries)} row(s) to BENCHMARKS.md")
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sizes", type=int, nargs="+",
                         default=[1682, 6000, 30000, 180000, 360000])
     parser.add_argument("--repeat", type=int, default=3,
                         help="number of raw measurements per sample size (default: 3)")
+    parser.add_argument("--warmup", type=int, default=1,
+                        help="discarded full runs per sample size (default: 1)")
     parser.add_argument("--compare", action="store_true",
                         help="also run the optimisation prototypes on the largest size")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.repeat < 1:
         parser.error("--repeat must be at least 1")
+    if args.warmup < 0:
+        parser.error("--warmup must be at least 0")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
 
     ROOT.mkdir(exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")

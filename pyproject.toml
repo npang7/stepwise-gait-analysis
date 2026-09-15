@@ -37,8 +37,11 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = '-ra -m "not large_equivalence"'
 testpaths = ["tests"]
+markers = [
+  "large_equivalence: local-only 360,000-sample correctness-oracle comparison",
+]
 
 [tool.ruff]
 line-length = 100
