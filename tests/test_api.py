@@ -255,6 +255,23 @@ class ApiTests(unittest.TestCase):
         finally:
             small_manager.close()
 
+    def test_unexpected_submission_failure_still_removes_staging_file(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            app = create_app(self._settings(), manager=manager)
+            with (
+                patch.object(manager, "submit_staged", side_effect=RuntimeError("test failure")),
+                TestClient(app, raise_server_exceptions=False) as client,
+            ):
+                response = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
+        finally:
+            manager.close()
+
 
 class StreamingUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_streamed_write_preserves_chunks(self) -> None:
