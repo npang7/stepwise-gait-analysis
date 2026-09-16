@@ -60,4 +60,14 @@ The full protocol, dependency metadata, source commits, and submission timings a
 | 20260915-224422 | 87a7f83 | 30000 | 1.58 | median of 3 after 1 warmup, spread 3.0% |
 | 20260915-224422 | 87a7f83 | 180000 | 7.29 | median of 3 after 1 warmup, spread 2.7% |
 | 20260915-224422 | 87a7f83 | 360000 | 13.38 | median of 3 after 1 warmup, spread 1.9% |
+| 20260916-014527 | bd476cb | 1682 | 0.42 | median of 3 after 1 warmup, spread 4.2% |
+| 20260916-014527 | bd476cb | 6000 | 0.60 | median of 3 after 1 warmup, spread 11.7% |
+| 20260916-014527 | bd476cb | 30000 | 1.56 | median of 3 after 1 warmup, spread 4.9% |
+| 20260916-014527 | bd476cb | 180000 | 7.11 | median of 3 after 1 warmup, spread 0.8% |
+| 20260916-014527 | bd476cb | 360000 | 13.08 | median of 3 after 1 warmup, spread 2.6% |
+| 20260916-014704 | b3cd202 | 1682 | 0.41 | median of 3 after 1 warmup, spread 1.8% |
+| 20260916-014704 | b3cd202 | 6000 | 0.77 | median of 3 after 1 warmup, spread 6.7% |
+| 20260916-014704 | b3cd202 | 30000 | 1.29 | median of 3 after 1 warmup, spread 3.3% |
+| 20260916-014704 | b3cd202 | 180000 | 3.91 | median of 3 after 1 warmup, spread 1.3% |
+| 20260916-014704 | b3cd202 | 360000 | 6.98 | median of 3 after 1 warmup, spread 2.6% |
 <!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->
