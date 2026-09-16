@@ -1,0 +1,37 @@
+{
+  "commit": "87a7f83",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.11.7",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3",
+    "pyarrow": "25.0.1"
+  },
+  "samples": 360000,
+  "input_bytes": 34100808,
+  "analysis_to_succeeded_seconds": 17.277026100000512,
+  "manifest_csv_size_bytes": 0,
+  "first_download": {
+    "status_code": 200,
+    "headers_seconds": 8.6795669000021,
+    "first_byte_seconds": 8.692551700001786,
+    "complete_seconds": 9.184114600000612,
+    "bytes": 179249070,
+    "content_length": 179249070
+  },
+  "cached_download": {
+    "status_code": 200,
+    "headers_seconds": 0.0024938999995356426,
+    "first_byte_seconds": 0.0027249000013398472,
+    "complete_seconds": 0.4935256000026129,
+    "bytes": 179249070,
+    "content_length": 179249070
+  },
+  "parquet_bytes": 67226341,
+  "csv_bytes": 179249070,
+  "mini_program": {
+    "downloads_processed_csv": false,
+    "explicit_artifact_timeout": false
+  }
+}

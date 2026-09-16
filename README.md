@@ -89,6 +89,13 @@ Validation runs off the event loop before the server returns `202 Accepted`; suc
 move atomically into the UUID run directory. Poll the status resource until `succeeded` or
 `failed`, then fetch strict JSON and the allowlisted artifacts.
 
+The full-signal `processed_gait_data.csv` is backed by an eagerly persisted Parquet file
+and is generated atomically on its first download, then cached until normal TTL cleanup
+removes the run. Its manifest `size_bytes` is always `0`: this is a documented sentinel
+meaning that the lazy artifact's size is not maintained in the terminal manifest, not that
+the CSV is empty. Clients can read the materialized size from the download response's
+`Content-Length` header.
+
 ### API routes
 
 - `POST /api/v1/analyses`

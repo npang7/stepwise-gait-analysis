@@ -41,7 +41,8 @@ class PackageLayoutTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         lowest = re.search(
             r"boundary: lowest\s+numpy_spec: \"numpy==([^\"]+)\"\s+"
-            r"pandas_spec: \"pandas==([^\"]+)\"",
+            r"pandas_spec: \"pandas==([^\"]+)\"\s+"
+            r"pyarrow_spec: \"pyarrow==([^\"]+)\"",
             workflow,
         )
         self.assertIsNotNone(lowest, "dependency-bounds lowest matrix entry is missing")
@@ -59,10 +60,15 @@ class PackageLayoutTests(unittest.TestCase):
         def normalized(version: str) -> tuple[int, ...]:
             return tuple(int(part) for part in version.split("."))
 
+        def assert_matches_declared_lower_bound(package: str, version: str) -> None:
+            declared = lower_bound(package)
+            self.assertEqual(normalized(version)[: len(declared)], declared)
+
         assert lowest is not None
-        numpy_lowest, pandas_lowest = lowest.groups()
-        self.assertEqual(normalized(numpy_lowest)[:2], lower_bound("numpy")[:2])
-        self.assertEqual(normalized(pandas_lowest)[:2], lower_bound("pandas")[:2])
+        numpy_lowest, pandas_lowest, pyarrow_lowest = lowest.groups()
+        assert_matches_declared_lower_bound("numpy", numpy_lowest)
+        assert_matches_declared_lower_bound("pandas", pandas_lowest)
+        assert_matches_declared_lower_bound("pyarrow", pyarrow_lowest)
 
 
 if __name__ == "__main__":

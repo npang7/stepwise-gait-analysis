@@ -152,6 +152,29 @@ class JobRepositoryTests(unittest.TestCase):
         self.assertFalse((self.root / expired.run_id).exists())
         self.assertTrue((self.root / active.run_id).exists())
 
+    def test_cleanup_skips_an_expired_run_until_its_artifact_lease_is_released(self) -> None:
+        expired = self.repository.create()
+        now = datetime(2026, 8, 1, tzinfo=UTC)
+        old = (now - timedelta(hours=25)).isoformat()
+        self.repository.save(
+            JobManifest(
+                run_id=expired.run_id,
+                status="succeeded",
+                created_at=old,
+                updated_at=old,
+                result={"summary": {}, "metrics": {}, "risk_cards": [], "artifacts": []},
+            )
+        )
+        lease = self.repository.acquire_artifact_lease(expired.run_id)
+
+        self.assertEqual(self.repository.cleanup_expired(24, now=now), [])
+        self.assertTrue(self.repository.run_dir(expired.run_id).is_dir())
+
+        lease.release()
+        lease.release()
+        self.assertEqual(self.repository.cleanup_expired(24, now=now), [expired.run_id])
+        self.assertFalse((self.root / expired.run_id).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

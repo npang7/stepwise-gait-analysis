@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,23 @@ ARTIFACT_MEDIA_TYPES = {
     ".json": "application/json",
     ".png": "image/png",
 }
+PROCESSED_CSV_NAME = "processed_gait_data.csv"
+PROCESSED_PARQUET_NAME = "processed_gait_data.parquet"
+
+
+def materialize_processed_csv(output_dir: Path) -> Path:
+    """Atomically create the public processed CSV from its private Parquet backing."""
+    destination = output_dir / PROCESSED_CSV_NAME
+    if destination.is_file():
+        return destination
+    source = output_dir / PROCESSED_PARQUET_NAME
+    temporary = output_dir / f".{PROCESSED_CSV_NAME}.{uuid.uuid4().hex}.tmp"
+    try:
+        pd.read_parquet(source).to_csv(temporary, index=False)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -109,7 +127,8 @@ def write_analysis_artifacts(
 ) -> tuple[Artifact, ...]:
     """Write the stable artifact set and return its download manifest."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    processed.to_csv(output_dir / "processed_gait_data.csv", index=False)
+    (output_dir / PROCESSED_CSV_NAME).unlink(missing_ok=True)
+    processed.to_parquet(output_dir / PROCESSED_PARQUET_NAME, index=False)
     steps.to_csv(output_dir / "gait_steps_analysis.csv", index=False)
     _write_json(output_dir / "session_summary.json", summary)
     _write_json(
@@ -176,7 +195,7 @@ four pressure channels, accelerometer, gyroscope, and orientation values.</p>
 
     artifacts: list[Artifact] = []
     for path in sorted(output_dir.iterdir(), key=lambda item: item.name):
-        if path.is_file():
+        if path.is_file() and path.name != PROCESSED_PARQUET_NAME:
             artifacts.append(
                 Artifact(
                     name=path.name,
@@ -184,4 +203,7 @@ four pressure channels, accelerometer, gyroscope, and orientation values.</p>
                     size_bytes=path.stat().st_size,
                 )
             )
-    return tuple(artifacts)
+    artifacts.append(
+        Artifact(name=PROCESSED_CSV_NAME, media_type="text/csv", size_bytes=0)
+    )
+    return tuple(sorted(artifacts, key=lambda artifact: artifact.name))

@@ -99,6 +99,11 @@ def _current_processed_frame_roundtrip(frame: pd.DataFrame, path: Path) -> pd.Da
     return pd.read_csv(path)
 
 
+def _parquet_processed_frame_roundtrip(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
+    frame.to_parquet(path, index=False)
+    return pd.read_parquet(path)
+
+
 @pytest.mark.parametrize("fixture_name", PARSER_FIXTURES)
 def test_reference_parser_matches_shipping_parser_exactly(fixture_name: str) -> None:
     text = (FIXTURES / fixture_name).read_text(encoding="utf-8")
@@ -163,6 +168,21 @@ def test_reference_processed_csv_roundtrip_matches_current_path(
     actual = _current_processed_frame_roundtrip(processed, tmp_path / "actual.csv")
     expected = reference_processed_frame_roundtrip(processed, tmp_path / "reference.csv")
     _assert_frame_equivalent(actual, expected, float_atol=1e-9)
+
+
+@pytest.mark.parametrize("fixture_name", PIPELINE_FIXTURES)
+def test_parquet_roundtrip_and_materialized_csv_match_eager_csv_reference(
+    fixture_name: str, tmp_path: Path
+) -> None:
+    processed, _intervals = _processed_and_intervals(FIXTURES / fixture_name)
+    parquet = _parquet_processed_frame_roundtrip(processed, tmp_path / "processed.parquet")
+    expected = reference_processed_frame_roundtrip(processed, tmp_path / "reference.csv")
+
+    _assert_frame_equivalent(parquet, expected, float_atol=1e-9)
+    parquet.to_csv(tmp_path / "materialized.csv", index=False)
+    assert (tmp_path / "materialized.csv").read_bytes() == (
+        tmp_path / "reference.csv"
+    ).read_bytes()
 
 
 def test_parser_oracle_rejects_a_mutated_result() -> None:
@@ -272,3 +292,12 @@ def test_large_360000_sample_reference_comparison(tmp_path: Path) -> None:
         processed, tmp_path / "reference.csv"
     )
     _assert_frame_equivalent(actual_roundtrip, expected_roundtrip, float_atol=1e-9)
+
+    parquet_roundtrip = _parquet_processed_frame_roundtrip(
+        processed, tmp_path / "processed.parquet"
+    )
+    _assert_frame_equivalent(parquet_roundtrip, expected_roundtrip, float_atol=1e-9)
+    parquet_roundtrip.to_csv(tmp_path / "materialized.csv", index=False)
+    assert (tmp_path / "materialized.csv").read_bytes() == (
+        tmp_path / "reference.csv"
+    ).read_bytes()

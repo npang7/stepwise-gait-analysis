@@ -4,20 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from .jobs import JobManager, QueueFullError, SubmissionError
 from .models import AnalysisConfig, JobManifest, SensorMapping
+from .reporting import PROCESSED_CSV_NAME, materialize_processed_csv
 from .settings import Settings
-from .storage import ArtifactNotFoundError, JobNotFoundError
+from .storage import ArtifactLease, ArtifactNotFoundError, JobNotFoundError
 
 UPLOAD_CHUNK_BYTES = 64 * 1024
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -76,6 +78,15 @@ async def _stream_upload(upload: UploadFile, destination: Path, limit: int) -> i
             handle.write(chunk)
             written += len(chunk)
     return written
+
+
+def _leased_file_chunks(path: Path, lease: ArtifactLease) -> Iterator[bytes]:
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(DOWNLOAD_CHUNK_BYTES):
+                yield chunk
+    finally:
+        lease.release()
 
 
 def create_app(
@@ -177,14 +188,34 @@ def create_app(
         return JSONResponse(content=manifest.result)
 
     @app.get("/api/v1/analyses/{run_id}/artifacts/{name}", response_model=None)
-    def get_artifact(run_id: str, name: str) -> FileResponse | JSONResponse:
+    def get_artifact(
+        run_id: str, name: str
+    ) -> FileResponse | StreamingResponse | JSONResponse:
+        lease: ArtifactLease | None = None
+        leased_size: int | None = None
         try:
             manifest = job_manager.repository.get(run_id)
-            path = job_manager.repository.artifact_path(run_id, name)
+            if name == PROCESSED_CSV_NAME:
+                lease = job_manager.repository.acquire_artifact_lease(run_id)
+                path = job_manager.repository.artifact_destination(run_id, name)
+                with job_manager.repository.artifact_materialization_lock(run_id, name):
+                    if not path.is_file():
+                        materialize_processed_csv(job_manager.repository.artifact_dir(run_id))
+                leased_size = path.stat().st_size
+            else:
+                path = job_manager.repository.artifact_path(run_id, name)
         except JobNotFoundError:
+            if lease is not None:
+                lease.release()
             return _error(404, "analysis_not_found", "Analysis was not found.")
         except ArtifactNotFoundError:
+            if lease is not None:
+                lease.release()
             return _error(404, "artifact_not_found", "Artifact was not found.")
+        except (ImportError, OSError, ValueError):
+            if lease is not None:
+                lease.release()
+            return _error(500, "artifact_generation_failed", "Artifact generation failed.")
         artifacts = [] if manifest.result is None else manifest.result.get("artifacts", [])
         media_type = next(
             (
@@ -194,6 +225,16 @@ def create_app(
             ),
             "application/octet-stream",
         )
+        if lease is not None:
+            assert leased_size is not None
+            return StreamingResponse(
+                _leased_file_chunks(path, lease),
+                media_type=media_type,
+                headers={
+                    "content-disposition": f'attachment; filename="{name}"',
+                    "content-length": str(leased_size),
+                },
+            )
         return FileResponse(path, media_type=media_type, filename=name)
 
     return app
