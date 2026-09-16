@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from .models import Artifact, RiskCard, strict_json_value
@@ -26,6 +27,7 @@ ARTIFACT_MEDIA_TYPES = {
 }
 PROCESSED_CSV_NAME = "processed_gait_data.csv"
 PROCESSED_PARQUET_NAME = "processed_gait_data.parquet"
+PLOT_TARGET_BUCKETS = 4_000
 
 
 def materialize_processed_csv(output_dir: Path) -> Path:
@@ -50,6 +52,41 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _min_max_envelope(
+    time: pd.Series,
+    values: pd.Series,
+    *,
+    target_buckets: int = PLOT_TARGET_BUCKETS,
+) -> tuple[pd.Series, pd.Series]:
+    """Return a chronological per-series min/max envelope without mutating the source."""
+    if len(time) != len(values):
+        raise ValueError("plot time and value series must have equal lengths")
+    if target_buckets < 1:
+        raise ValueError("target_buckets must be at least 1")
+    if len(values) <= target_buckets:
+        return time, values
+
+    bucket_size = max(1, (len(values) + target_buckets - 1) // target_buckets)
+    numeric = values.to_numpy(dtype=float, na_value=np.nan)
+    finite = np.isfinite(numeric)
+    selected = {0, len(values) - 1}
+
+    for start in range(0, len(values), bucket_size):
+        stop = min(start + bucket_size, len(values))
+        bucket_positions = np.flatnonzero(finite[start:stop])
+        if bucket_positions.size:
+            bucket_values = numeric[start:stop][bucket_positions]
+            selected.add(start + int(bucket_positions[int(np.argmin(bucket_values))]))
+            selected.add(start + int(bucket_positions[int(np.argmax(bucket_values))]))
+
+    nonfinite = ~finite
+    gap_starts = np.flatnonzero(nonfinite & np.concatenate(([True], ~nonfinite[:-1])))
+    selected.update(int(position) for position in gap_starts)
+
+    positions = np.fromiter(sorted(selected), dtype=np.intp)
+    return time.iloc[positions], values.iloc[positions]
+
+
 def _plot(
     path: Path,
     frame: pd.DataFrame,
@@ -60,7 +97,8 @@ def _plot(
     figure, axis = plt.subplots(figsize=(8.4, 4.2))
     for column in columns:
         if column in frame:
-            axis.plot(frame["Time_s"], frame[column], label=column, linewidth=1.25)
+            plot_time, plot_values = _min_max_envelope(frame["Time_s"], frame[column])
+            axis.plot(plot_time, plot_values, label=column, linewidth=1.25)
     axis.set(title=title, xlabel="Time (s)", ylabel=ylabel)
     axis.grid(alpha=0.25)
     axis.legend(loc="best", ncol=2, fontsize=8)
