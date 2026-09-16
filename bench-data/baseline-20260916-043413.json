@@ -1,0 +1,649 @@
+{
+  "timestamp": "2026-09-16T04:38:09.093181+00:00",
+  "commit": "2e457da",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.11.7",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3"
+  },
+  "repeat": 5,
+  "warmup": 1,
+  "runs": [
+    {
+      "run": 1,
+      "results": [
+        {
+          "samples": 1682,
+          "duration_s": 16.82,
+          "input_mb": 0.15,
+          "stance_phases": 16,
+          "stage_seconds": {
+            "parse": 0.0123,
+            "features_basic": 0.0094,
+            "segment": 0.0011,
+            "stance_features": 0.0164,
+            "screening": 0.0,
+            "artifacts": 0.3819,
+            "TOTAL": 0.4213
+          }
+        },
+        {
+          "samples": 6000,
+          "duration_s": 60.0,
+          "input_mb": 0.55,
+          "stance_phases": 55,
+          "stage_seconds": {
+            "parse": 0.0413,
+            "features_basic": 0.0158,
+            "segment": 0.003,
+            "stance_features": 0.0504,
+            "screening": 0.0,
+            "artifacts": 0.6101,
+            "TOTAL": 0.7206
+          }
+        },
+        {
+          "samples": 30000,
+          "duration_s": 300.0,
+          "input_mb": 2.78,
+          "stance_phases": 273,
+          "stage_seconds": {
+            "parse": 0.2349,
+            "features_basic": 0.0469,
+            "segment": 0.0142,
+            "stance_features": 0.2233,
+            "screening": 0.0,
+            "artifacts": 1.7063,
+            "TOTAL": 2.2256
+          }
+        },
+        {
+          "samples": 180000,
+          "duration_s": 1800.0,
+          "input_mb": 16.96,
+          "stance_phases": 1637,
+          "stage_seconds": {
+            "parse": 1.2628,
+            "features_basic": 0.2846,
+            "segment": 0.0928,
+            "stance_features": 1.3799,
+            "screening": 0.0,
+            "artifacts": 8.1288,
+            "TOTAL": 11.1489
+          }
+        },
+        {
+          "samples": 360000,
+          "duration_s": 3600.0,
+          "input_mb": 34.1,
+          "stance_phases": 3273,
+          "stage_seconds": {
+            "parse": 2.6028,
+            "features_basic": 0.5395,
+            "segment": 0.1809,
+            "stance_features": 2.6778,
+            "screening": 0.0,
+            "artifacts": 15.7355,
+            "TOTAL": 21.7364
+          }
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "results": [
+        {
+          "samples": 1682,
+          "duration_s": 16.82,
+          "input_mb": 0.15,
+          "stance_phases": 16,
+          "stage_seconds": {
+            "parse": 0.0117,
+            "features_basic": 0.0095,
+            "segment": 0.0009,
+            "stance_features": 0.0157,
+            "screening": 0.0,
+            "artifacts": 0.386,
+            "TOTAL": 0.424
+          }
+        },
+        {
+          "samples": 6000,
+          "duration_s": 60.0,
+          "input_mb": 0.55,
+          "stance_phases": 55,
+          "stage_seconds": {
+            "parse": 0.0379,
+            "features_basic": 0.0148,
+            "segment": 0.0027,
+            "stance_features": 0.0793,
+            "screening": 0.0,
+            "artifacts": 0.6106,
+            "TOTAL": 0.7453
+          }
+        },
+        {
+          "samples": 30000,
+          "duration_s": 300.0,
+          "input_mb": 2.78,
+          "stance_phases": 273,
+          "stage_seconds": {
+            "parse": 0.2393,
+            "features_basic": 0.0468,
+            "segment": 0.0138,
+            "stance_features": 0.2358,
+            "screening": 0.0,
+            "artifacts": 1.6966,
+            "TOTAL": 2.2323
+          }
+        },
+        {
+          "samples": 180000,
+          "duration_s": 1800.0,
+          "input_mb": 16.96,
+          "stance_phases": 1637,
+          "stage_seconds": {
+            "parse": 1.2945,
+            "features_basic": 0.2871,
+            "segment": 0.0825,
+            "stance_features": 1.3634,
+            "screening": 0.0,
+            "artifacts": 8.0986,
+            "TOTAL": 11.126
+          }
+        },
+        {
+          "samples": 360000,
+          "duration_s": 3600.0,
+          "input_mb": 34.1,
+          "stance_phases": 3273,
+          "stage_seconds": {
+            "parse": 2.6097,
+            "features_basic": 0.5082,
+            "segment": 0.1747,
+            "stance_features": 2.6476,
+            "screening": 0.0,
+            "artifacts": 15.6259,
+            "TOTAL": 21.566
+          }
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "results": [
+        {
+          "samples": 1682,
+          "duration_s": 16.82,
+          "input_mb": 0.15,
+          "stance_phases": 16,
+          "stage_seconds": {
+            "parse": 0.0131,
+            "features_basic": 0.0129,
+            "segment": 0.0008,
+            "stance_features": 0.017,
+            "screening": 0.0,
+            "artifacts": 0.3812,
+            "TOTAL": 0.4252
+          }
+        },
+        {
+          "samples": 6000,
+          "duration_s": 60.0,
+          "input_mb": 0.55,
+          "stance_phases": 55,
+          "stage_seconds": {
+            "parse": 0.0366,
+            "features_basic": 0.0148,
+            "segment": 0.0028,
+            "stance_features": 0.0474,
+            "screening": 0.0,
+            "artifacts": 0.6056,
+            "TOTAL": 0.7072
+          }
+        },
+        {
+          "samples": 30000,
+          "duration_s": 300.0,
+          "input_mb": 2.78,
+          "stance_phases": 273,
+          "stage_seconds": {
+            "parse": 0.1865,
+            "features_basic": 0.0489,
+            "segment": 0.0132,
+            "stance_features": 0.2451,
+            "screening": 0.0001,
+            "artifacts": 1.6861,
+            "TOTAL": 2.1799
+          }
+        },
+        {
+          "samples": 180000,
+          "duration_s": 1800.0,
+          "input_mb": 16.96,
+          "stance_phases": 1637,
+          "stage_seconds": {
+            "parse": 1.2497,
+            "features_basic": 0.2668,
+            "segment": 0.0932,
+            "stance_features": 1.3556,
+            "screening": 0.0,
+            "artifacts": 8.0564,
+            "TOTAL": 11.0217
+          }
+        },
+        {
+          "samples": 360000,
+          "duration_s": 3600.0,
+          "input_mb": 34.1,
+          "stance_phases": 3273,
+          "stage_seconds": {
+            "parse": 2.6001,
+            "features_basic": 0.5177,
+            "segment": 0.1567,
+            "stance_features": 2.642,
+            "screening": 0.0,
+            "artifacts": 15.5317,
+            "TOTAL": 21.4482
+          }
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "results": [
+        {
+          "samples": 1682,
+          "duration_s": 16.82,
+          "input_mb": 0.15,
+          "stance_phases": 16,
+          "stage_seconds": {
+            "parse": 0.0161,
+            "features_basic": 0.0081,
+            "segment": 0.001,
+            "stance_features": 0.0148,
+            "screening": 0.0,
+            "artifacts": 0.408,
+            "TOTAL": 0.4479
+          }
+        },
+        {
+          "samples": 6000,
+          "duration_s": 60.0,
+          "input_mb": 0.55,
+          "stance_phases": 55,
+          "stage_seconds": {
+            "parse": 0.0376,
+            "features_basic": 0.0189,
+            "segment": 0.0031,
+            "stance_features": 0.0475,
+            "screening": 0.0,
+            "artifacts": 0.6092,
+            "TOTAL": 0.7164
+          }
+        },
+        {
+          "samples": 30000,
+          "duration_s": 300.0,
+          "input_mb": 2.78,
+          "stance_phases": 273,
+          "stage_seconds": {
+            "parse": 0.2011,
+            "features_basic": 0.0429,
+            "segment": 0.013,
+            "stance_features": 0.2573,
+            "screening": 0.0,
+            "artifacts": 1.705,
+            "TOTAL": 2.2194
+          }
+        },
+        {
+          "samples": 180000,
+          "duration_s": 1800.0,
+          "input_mb": 16.96,
+          "stance_phases": 1637,
+          "stage_seconds": {
+            "parse": 1.2247,
+            "features_basic": 0.2712,
+            "segment": 0.0858,
+            "stance_features": 1.3694,
+            "screening": 0.0,
+            "artifacts": 8.114,
+            "TOTAL": 11.0651
+          }
+        },
+        {
+          "samples": 360000,
+          "duration_s": 3600.0,
+          "input_mb": 34.1,
+          "stance_phases": 3273,
+          "stage_seconds": {
+            "parse": 2.581,
+            "features_basic": 0.5284,
+            "segment": 0.1633,
+            "stance_features": 2.6774,
+            "screening": 0.0,
+            "artifacts": 15.6845,
+            "TOTAL": 21.6346
+          }
+        }
+      ]
+    },
+    {
+      "run": 5,
+      "results": [
+        {
+          "samples": 1682,
+          "duration_s": 16.82,
+          "input_mb": 0.15,
+          "stance_phases": 16,
+          "stage_seconds": {
+            "parse": 0.0131,
+            "features_basic": 0.0095,
+            "segment": 0.001,
+            "stance_features": 0.0167,
+            "screening": 0.0,
+            "artifacts": 0.382,
+            "TOTAL": 0.4224
+          }
+        },
+        {
+          "samples": 6000,
+          "duration_s": 60.0,
+          "input_mb": 0.55,
+          "stance_phases": 55,
+          "stage_seconds": {
+            "parse": 0.0386,
+            "features_basic": 0.0151,
+            "segment": 0.0043,
+            "stance_features": 0.0448,
+            "screening": 0.0,
+            "artifacts": 0.644,
+            "TOTAL": 0.7467
+          }
+        },
+        {
+          "samples": 30000,
+          "duration_s": 300.0,
+          "input_mb": 2.78,
+          "stance_phases": 273,
+          "stage_seconds": {
+            "parse": 0.205,
+            "features_basic": 0.0456,
+            "segment": 0.0137,
+            "stance_features": 0.2285,
+            "screening": 0.0,
+            "artifacts": 1.7469,
+            "TOTAL": 2.2398
+          }
+        },
+        {
+          "samples": 180000,
+          "duration_s": 1800.0,
+          "input_mb": 16.96,
+          "stance_phases": 1637,
+          "stage_seconds": {
+            "parse": 1.2521,
+            "features_basic": 0.2802,
+            "segment": 0.0952,
+            "stance_features": 1.3533,
+            "screening": 0.0,
+            "artifacts": 8.1374,
+            "TOTAL": 11.1182
+          }
+        },
+        {
+          "samples": 360000,
+          "duration_s": 3600.0,
+          "input_mb": 34.1,
+          "stance_phases": 3273,
+          "stage_seconds": {
+            "parse": 2.5768,
+            "features_basic": 0.5032,
+            "segment": 0.1529,
+            "stance_features": 2.6237,
+            "screening": 0.0,
+            "artifacts": 15.5687,
+            "TOTAL": 21.4254
+          }
+        }
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "samples": 1682,
+      "duration_s": 16.82,
+      "input_mb": 0.15,
+      "stance_phases": 16,
+      "stage_seconds": {
+        "parse": 0.0131,
+        "features_basic": 0.0095,
+        "segment": 0.001,
+        "stance_features": 0.0164,
+        "screening": 0.0,
+        "artifacts": 0.382,
+        "TOTAL": 0.424
+      },
+      "raw_total_seconds": [
+        0.4213,
+        0.424,
+        0.4252,
+        0.4479,
+        0.4224
+      ],
+      "total_relative_range_percent": 6.2736
+    },
+    {
+      "samples": 6000,
+      "duration_s": 60.0,
+      "input_mb": 0.55,
+      "stance_phases": 55,
+      "stage_seconds": {
+        "parse": 0.0379,
+        "features_basic": 0.0151,
+        "segment": 0.003,
+        "stance_features": 0.0475,
+        "screening": 0.0,
+        "artifacts": 0.6101,
+        "TOTAL": 0.7206
+      },
+      "raw_total_seconds": [
+        0.7206,
+        0.7453,
+        0.7072,
+        0.7164,
+        0.7467
+      ],
+      "total_relative_range_percent": 5.4815
+    },
+    {
+      "samples": 30000,
+      "duration_s": 300.0,
+      "input_mb": 2.78,
+      "stance_phases": 273,
+      "stage_seconds": {
+        "parse": 0.205,
+        "features_basic": 0.0468,
+        "segment": 0.0137,
+        "stance_features": 0.2358,
+        "screening": 0.0,
+        "artifacts": 1.705,
+        "TOTAL": 2.2256
+      },
+      "raw_total_seconds": [
+        2.2256,
+        2.2323,
+        2.1799,
+        2.2194,
+        2.2398
+      ],
+      "total_relative_range_percent": 2.6914
+    },
+    {
+      "samples": 180000,
+      "duration_s": 1800.0,
+      "input_mb": 16.96,
+      "stance_phases": 1637,
+      "stage_seconds": {
+        "parse": 1.2521,
+        "features_basic": 0.2802,
+        "segment": 0.0928,
+        "stance_features": 1.3634,
+        "screening": 0.0,
+        "artifacts": 8.114,
+        "TOTAL": 11.1182
+      },
+      "raw_total_seconds": [
+        11.1489,
+        11.126,
+        11.0217,
+        11.0651,
+        11.1182
+      ],
+      "total_relative_range_percent": 1.1441
+    },
+    {
+      "samples": 360000,
+      "duration_s": 3600.0,
+      "input_mb": 34.1,
+      "stance_phases": 3273,
+      "stage_seconds": {
+        "parse": 2.6001,
+        "features_basic": 0.5177,
+        "segment": 0.1633,
+        "stance_features": 2.6476,
+        "screening": 0.0,
+        "artifacts": 15.6259,
+        "TOTAL": 21.566
+      },
+      "raw_total_seconds": [
+        21.7364,
+        21.566,
+        21.4482,
+        21.6346,
+        21.4254
+      ],
+      "total_relative_range_percent": 1.4421
+    }
+  ],
+  "results": [
+    {
+      "samples": 1682,
+      "duration_s": 16.82,
+      "input_mb": 0.15,
+      "stance_phases": 16,
+      "stage_seconds": {
+        "parse": 0.0131,
+        "features_basic": 0.0095,
+        "segment": 0.001,
+        "stance_features": 0.0164,
+        "screening": 0.0,
+        "artifacts": 0.382,
+        "TOTAL": 0.424
+      },
+      "raw_total_seconds": [
+        0.4213,
+        0.424,
+        0.4252,
+        0.4479,
+        0.4224
+      ],
+      "total_relative_range_percent": 6.2736
+    },
+    {
+      "samples": 6000,
+      "duration_s": 60.0,
+      "input_mb": 0.55,
+      "stance_phases": 55,
+      "stage_seconds": {
+        "parse": 0.0379,
+        "features_basic": 0.0151,
+        "segment": 0.003,
+        "stance_features": 0.0475,
+        "screening": 0.0,
+        "artifacts": 0.6101,
+        "TOTAL": 0.7206
+      },
+      "raw_total_seconds": [
+        0.7206,
+        0.7453,
+        0.7072,
+        0.7164,
+        0.7467
+      ],
+      "total_relative_range_percent": 5.4815
+    },
+    {
+      "samples": 30000,
+      "duration_s": 300.0,
+      "input_mb": 2.78,
+      "stance_phases": 273,
+      "stage_seconds": {
+        "parse": 0.205,
+        "features_basic": 0.0468,
+        "segment": 0.0137,
+        "stance_features": 0.2358,
+        "screening": 0.0,
+        "artifacts": 1.705,
+        "TOTAL": 2.2256
+      },
+      "raw_total_seconds": [
+        2.2256,
+        2.2323,
+        2.1799,
+        2.2194,
+        2.2398
+      ],
+      "total_relative_range_percent": 2.6914
+    },
+    {
+      "samples": 180000,
+      "duration_s": 1800.0,
+      "input_mb": 16.96,
+      "stance_phases": 1637,
+      "stage_seconds": {
+        "parse": 1.2521,
+        "features_basic": 0.2802,
+        "segment": 0.0928,
+        "stance_features": 1.3634,
+        "screening": 0.0,
+        "artifacts": 8.114,
+        "TOTAL": 11.1182
+      },
+      "raw_total_seconds": [
+        11.1489,
+        11.126,
+        11.0217,
+        11.0651,
+        11.1182
+      ],
+      "total_relative_range_percent": 1.1441
+    },
+    {
+      "samples": 360000,
+      "duration_s": 3600.0,
+      "input_mb": 34.1,
+      "stance_phases": 3273,
+      "stage_seconds": {
+        "parse": 2.6001,
+        "features_basic": 0.5177,
+        "segment": 0.1633,
+        "stance_features": 2.6476,
+        "screening": 0.0,
+        "artifacts": 15.6259,
+        "TOTAL": 21.566
+      },
+      "raw_total_seconds": [
+        21.7364,
+        21.566,
+        21.4482,
+        21.6346,
+        21.4254
+      ],
+      "total_relative_range_percent": 1.4421
+    }
+  ]
+}

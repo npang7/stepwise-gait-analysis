@@ -70,4 +70,19 @@ The full protocol, dependency metadata, source commits, and submission timings a
 | 20260916-014704 | b3cd202 | 30000 | 1.29 | median of 3 after 1 warmup, spread 3.3% |
 | 20260916-014704 | b3cd202 | 180000 | 3.91 | median of 3 after 1 warmup, spread 1.3% |
 | 20260916-014704 | b3cd202 | 360000 | 6.98 | median of 3 after 1 warmup, spread 2.6% |
+| 20260916-043413 | 2e457da | 1682 | 0.42 | median of 5 after 1 warmup, spread 6.3% |
+| 20260916-043413 | 2e457da | 6000 | 0.72 | median of 5 after 1 warmup, spread 5.5% |
+| 20260916-043413 | 2e457da | 30000 | 2.23 | median of 5 after 1 warmup, spread 2.7% |
+| 20260916-043413 | 2e457da | 180000 | 11.12 | median of 5 after 1 warmup, spread 1.1% |
+| 20260916-043413 | 2e457da | 360000 | 21.57 | median of 5 after 1 warmup, spread 1.4% |
+| 20260916-043810 | 5b5abdf | 1682 | 0.40 | median of 5 after 1 warmup, spread 11.1% |
+| 20260916-043810 | 5b5abdf | 6000 | 0.73 | median of 5 after 1 warmup, spread 5.6% |
+| 20260916-043810 | 5b5abdf | 30000 | 1.20 | median of 5 after 1 warmup, spread 4.7% |
+| 20260916-043810 | 5b5abdf | 180000 | 3.74 | median of 5 after 1 warmup, spread 2.3% |
+| 20260916-043810 | 5b5abdf | 360000 | 6.61 | median of 5 after 1 warmup, spread 2.2% |
+| 20260916-043945 | 2e457da | 1682 | 0.42 | median of 5 after 1 warmup, spread 10.9% |
+| 20260916-043945 | 2e457da | 6000 | 0.73 | median of 5 after 1 warmup, spread 8.0% |
+| 20260916-043945 | 2e457da | 30000 | 2.15 | median of 5 after 1 warmup, spread 2.3% |
+| 20260916-043945 | 2e457da | 180000 | 10.87 | median of 5 after 1 warmup, spread 2.2% |
+| 20260916-043945 | 2e457da | 360000 | 21.42 | median of 5 after 1 warmup, spread 1.3% |
 <!-- bench_stepwise.py inserts new per-size pipeline rows immediately above this line. -->
