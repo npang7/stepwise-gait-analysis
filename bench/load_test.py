@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -771,7 +772,8 @@ async def start_service(
                     raise RuntimeError(f"service exited during startup with {process.returncode}")
                 try:
                     response = await client.get(f"{handle.base_url}/healthz")
-                    if response.status_code == 200 and response.json() == {"status": "ok"}:
+                    payload = response.json()
+                    if response.status_code == 200 and payload.get("status") == "ok":
                         try:
                             descendants = ps_process.children(recursive=False)
                             uvicorn_children = [
@@ -1419,6 +1421,10 @@ class HealthObservation:
     latency_seconds: float
     status_code: int | None
     error: str | None = None
+    error_code: str | None = None
+    pending_count: int | None = None
+    oldest_wait_seconds: float | None = None
+    response_body: Any | None = None
 
 
 class CorrectnessMismatch(RuntimeError):
@@ -1499,6 +1505,7 @@ class MeasurementState:
         self.measurement_end_s: float | None = None
         self.stop = asyncio.Event()
         self.fatal_error: str | None = None
+        self.fatal_evidence: dict[str, Any] | None = None
         self.status_poll_anomalies: list[dict[str, Any]] = []
 
     def record(self, observation: JobObservation) -> None:
@@ -1723,35 +1730,46 @@ async def run_memory_calibration(
     terminal: dict[str, Any] | None = None
     failure: str | None = None
     run_id: str | None = None
+    health_state: MeasurementState | None = None
+    health_observations: list[HealthObservation] = []
     try:
         monitor.phase = "upload"
         upload_started = time.monotonic()
         content = await asyncio.to_thread(input_path.read_bytes)
-        async with httpx.AsyncClient(base_url=service.base_url, timeout=180.0) as client:
-            response = await client.post(
-                "/api/v1/analyses",
-                files={"walking": ("walk.txt", content, "text/plain")},
-            )
-            upload_ended = time.monotonic()
-            monitor.phase = "analysis"
-            if response.status_code != 202:
-                failure = f"submission returned {response.status_code}: {response.text}"
-            else:
-                run_id = str(response.json()["run_id"])
-                terminal = await _wait_terminal(client, run_id, 180.0)
-                if terminal.get("status") != "succeeded":
-                    failure = f"calibration job did not succeed: {terminal}"
+        async with (
+            httpx.AsyncClient(base_url=service.base_url, timeout=180.0) as client,
+            _health_watch(client) as (health_state, health_observations),
+        ):
+                response = await client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", content, "text/plain")},
+                )
+                upload_ended = time.monotonic()
+                monitor.phase = "analysis"
+                if response.status_code != 202:
+                    failure = f"submission returned {response.status_code}: {response.text}"
                 else:
-                    monitor.phase = "result-extraction"
-                    result_response = await client.get(f"/api/v1/analyses/{run_id}/result")
-                    steps_response = await client.get(
-                        f"/api/v1/analyses/{run_id}/artifacts/gait_steps_analysis.csv"
+                    run_id = str(response.json()["run_id"])
+                    terminal = await _wait_terminal(
+                        client, run_id, 180.0, health_state=health_state
                     )
-                    if result_response.status_code != 200 or steps_response.status_code != 200:
-                        failure = (
-                            "calibration result extraction failed: "
-                            f"result={result_response.status_code}, steps={steps_response.status_code}"
+                    if terminal.get("status") != "succeeded":
+                        failure = f"calibration job did not succeed: {terminal}"
+                    else:
+                        monitor.phase = "result-extraction"
+                        result_response = await client.get(f"/api/v1/analyses/{run_id}/result")
+                        steps_response = await client.get(
+                            f"/api/v1/analyses/{run_id}/artifacts/gait_steps_analysis.csv"
                         )
+                        if (
+                            result_response.status_code != 200
+                            or steps_response.status_code != 200
+                        ):
+                            failure = (
+                                "calibration result extraction failed: "
+                                f"result={result_response.status_code}, "
+                                f"steps={steps_response.status_code}"
+                            )
     except (OSError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         failure = f"{type(exc).__name__}: {exc}"
     finally:
@@ -1787,7 +1805,20 @@ async def run_memory_calibration(
         failure = failure or "calibration triggered the runtime memory/pagefile gate"
     if gate["disk_below_20_gib"]:
         failure = failure or "calibration disk free space fell below 20 GiB"
-    result = {
+    health_result = (
+        _health_watch_result(health_state, health_observations)
+        if health_state is not None
+        else {
+            "samples": [],
+            "terminal_persistence": health_backlog_statistics([]),
+            "fatal_503": None,
+            "fatal_error": None,
+            "abort_suite": False,
+        }
+    )
+    if health_result["fatal_error"]:
+        failure = failure or str(health_result["fatal_error"])
+    result: dict[str, Any] = {
         "sample_count": sample_count,
         "label": label,
         "path_id": identifier,
@@ -1809,6 +1840,7 @@ async def run_memory_calibration(
         "resource_gate": gate,
         "monitor_errors": monitor.errors,
         "samples": [asdict(sample) for sample in monitor.samples],
+        "health": health_result,
         "failure": failure,
         "passed": failure is None,
     }
@@ -1836,17 +1868,114 @@ async def _health_probe(
         started = time.monotonic()
         status_code: int | None = None
         error: str | None = None
+        error_code: str | None = None
+        pending_count: int | None = None
+        oldest_wait_seconds: float | None = None
+        response_body: Any | None = None
         try:
             response = await client.get("/healthz", timeout=2.0)
             status_code = response.status_code
+            try:
+                response_body = response.json()
+            except ValueError:
+                response_body = response.text
+            if isinstance(response_body, dict):
+                error_payload = response_body.get("error")
+                if isinstance(error_payload, dict):
+                    code = error_payload.get("code")
+                    error_code = code if isinstance(code, str) else None
+                persistence = response_body.get("terminal_persistence")
+                if isinstance(persistence, dict):
+                    count = persistence.get("pending_count")
+                    wait = persistence.get("oldest_wait_seconds")
+                    pending_count = count if isinstance(count, int) else None
+                    oldest_wait_seconds = (
+                        float(wait) if isinstance(wait, (int, float)) else None
+                    )
         except httpx.HTTPError as exc:
             error = f"{type(exc).__name__}: {exc}"
         ended = time.monotonic()
-        output.append(HealthObservation(started, ended - started, status_code, error))
+        observation = HealthObservation(
+            started,
+            ended - started,
+            status_code,
+            error,
+            error_code,
+            pending_count,
+            oldest_wait_seconds,
+            response_body,
+        )
+        output.append(observation)
+        if status_code == 503:
+            fatal_reason = (
+                error_code
+                if error_code
+                in {"job_supervisor_unavailable", "terminal_persistence_saturated"}
+                else "unexpected-health-503"
+            )
+            state.fatal_evidence = {
+                "reason": fatal_reason,
+                "observed_monotonic_s": started,
+                "status_code": status_code,
+                "error_code": error_code,
+                "response_body": response_body,
+            }
+            state.fail(fatal_reason)
+            return
         try:
             await asyncio.wait_for(state.stop.wait(), timeout=max(0.0, 1.0 - (ended - started)))
         except TimeoutError:
             pass
+
+
+@asynccontextmanager
+async def _health_watch(
+    client: httpx.AsyncClient,
+) -> AsyncIterator[tuple[MeasurementState, list[HealthObservation]]]:
+    state = MeasurementState(window_seconds=24 * 60 * 60, target=sys.maxsize)
+    observations: list[HealthObservation] = []
+    task = asyncio.create_task(_health_probe(client, state, observations))
+    try:
+        yield state, observations
+    finally:
+        state.stop.set()
+        await task
+
+
+def _health_watch_result(
+    state: MeasurementState, observations: list[HealthObservation]
+) -> dict[str, Any]:
+    return {
+        "samples": [asdict(row) for row in observations],
+        "terminal_persistence": health_backlog_statistics(observations),
+        "fatal_503": state.fatal_evidence,
+        "fatal_error": state.fatal_error,
+        "abort_suite": state.fatal_error is not None,
+    }
+
+
+@dataclass
+class RuntimeHealthWatch:
+    client: httpx.AsyncClient
+    state: MeasurementState
+    observations: list[HealthObservation]
+    task: asyncio.Task[None]
+
+    @classmethod
+    async def start(cls, base_url: str) -> Self:
+        client = httpx.AsyncClient(base_url=base_url, timeout=2.0)
+        state = MeasurementState(window_seconds=24 * 60 * 60, target=sys.maxsize)
+        observations: list[HealthObservation] = []
+        task = asyncio.create_task(_health_probe(client, state, observations))
+        return cls(client, state, observations, task)
+
+    async def stop(self) -> None:
+        self.state.stop.set()
+        await self.task
+        await self.client.aclose()
+
+    def result(self) -> dict[str, Any]:
+        return _health_watch_result(self.state, self.observations)
 
 
 async def _download_and_check(
@@ -1907,6 +2036,33 @@ async def _load_client(
             except TimeoutError:
                 pass
             continue
+        if response.status_code == 503:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = response.text
+            code = (
+                payload.get("error", {}).get("code")
+                if isinstance(payload, dict)
+                and isinstance(payload.get("error"), dict)
+                else None
+            )
+            fatal_reason = (
+                code
+                if code
+                in {"job_supervisor_unavailable", "terminal_persistence_saturated"}
+                else "unexpected-submission-503"
+            )
+            state.fatal_evidence = {
+                "reason": fatal_reason,
+                "source": "submission",
+                "observed_monotonic_s": accepted_at,
+                "status_code": 503,
+                "error_code": code,
+                "response_body": payload,
+            }
+            state.fail(str(fatal_reason))
+            return
         if response.status_code != 202:
             state.fail(f"unexpected submission status {response.status_code}: {response.text}")
             return
@@ -2039,6 +2195,42 @@ def _stats_for_jobs(jobs: list[JobObservation], *, raw_only: bool) -> dict[str, 
     }
 
 
+def health_backlog_statistics(rows: list[HealthObservation]) -> dict[str, Any]:
+    pending = [float(row.pending_count) for row in rows if row.pending_count is not None]
+    waits = [
+        0.0 if row.oldest_wait_seconds is None else float(row.oldest_wait_seconds)
+        for row in rows
+        if row.pending_count is not None
+    ]
+
+    def field(values: list[float]) -> dict[str, float | int | None]:
+        if not values:
+            return {"n": 0, "median": None, "p95": None, "max": None}
+        return {
+            "n": len(values),
+            "median": statistics.median(values),
+            "p95": _nearest_rank(values, 0.95),
+            "max": max(values),
+        }
+
+    ge_one = sum(value >= 1 for value in pending)
+    ge_three = sum(value >= 3 for value in pending)
+    crossings = sum(
+        previous < 3 <= current for previous, current in itertools.pairwise(pending)
+    )
+    return {
+        "n": len(rows),
+        "telemetry_n": len(pending),
+        "missing_telemetry_n": len(rows) - len(pending),
+        "pending_count": field(pending),
+        "oldest_wait_seconds": field(waits),
+        "pending_count_ge_1_samples": ge_one,
+        "pending_count_ge_3_samples": ge_three,
+        "upward_crossings_to_ge_3": crossings,
+        "terminal_persistence_growth_observed": ge_three >= 2,
+    }
+
+
 def _repetition_summary(
     *,
     label: str,
@@ -2073,6 +2265,7 @@ def _repetition_summary(
         row for row in resources if start is not None and end is not None and start <= row.monotonic_s <= end
     ]
     resource_stats = resource_statistics(resource_window)
+    backlog_stats = health_backlog_statistics(health_window)
     failures = [job for job in formal if job.status == "failed"]
     disk_probe = _disk_probe(service.data_root) if any(
         job.error_code == "analysis_failed" for job in failures
@@ -2092,6 +2285,8 @@ def _repetition_summary(
         invalid_reasons.append("environmental-disk-failure")
     if state.fatal_error:
         invalid_reasons.append("fatal-error")
+    if backlog_stats["terminal_persistence_growth_observed"]:
+        invalid_reasons.append("terminal-persistence-growth-observed")
     accepted_run_dirs = len(
         [path for path in service.data_root.iterdir() if path.is_dir() and path.name != ".staging"]
     )
@@ -2129,6 +2324,8 @@ def _repetition_summary(
             [row.latency_seconds for row in health_window if row.status_code == 200]
         ),
         "health_errors": [asdict(row) for row in health_window if row.status_code != 200],
+        "terminal_persistence": backlog_stats,
+        "fatal_503": state.fatal_evidence,
         "status_poll_anomalies": state.status_poll_anomalies,
         "status_poll_500_count": sum(
             row["status_code"] == 500 for row in state.status_poll_anomalies
@@ -2265,6 +2462,10 @@ def aggregate_point(repetitions: list[dict[str, Any]]) -> dict[str, Any]:
         "latency_quantile_summary": (
             policies[0] if len(set(policies)) == 1 else "mixed; see repetitions"
         ),
+        "terminal_persistence_growth_observed": any(
+            bool(row.get("terminal_persistence", {}).get("terminal_persistence_growth_observed"))
+            for row in repetitions
+        ),
         "invalid_reasons": invalid_reasons,
         "citable": not invalid_reasons,
         "repetitions": repetitions,
@@ -2356,9 +2557,21 @@ def _remove_empty_parents(root: Path, work_root: Path, repository_root: Path) ->
                 pass
 
 
-async def _wait_terminal(client: httpx.AsyncClient, run_id: str, timeout: float) -> dict[str, Any]:
+async def _wait_terminal(
+    client: httpx.AsyncClient,
+    run_id: str,
+    timeout: float,
+    *,
+    health_state: MeasurementState | None = None,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if health_state is not None and health_state.fatal_error is not None:
+            return {
+                "run_id": run_id,
+                "status": "service_unavailable",
+                "error": health_state.fatal_evidence,
+            }
         response = await client.get(f"/api/v1/analyses/{run_id}")
         if response.status_code == 404:
             return {"run_id": run_id, "status": "not_found"}
@@ -2379,6 +2592,7 @@ async def run_timeout_fault(
         log_path=session_dir / "service-logs" / f"{identifier}.log",
         runner_mode="slow",
     )
+    health_watch = await RuntimeHealthWatch.start(service.base_url)
     process_children_before = set(service.observed_worker_pids)
     try:
         content = input_path.read_bytes()
@@ -2405,10 +2619,18 @@ async def run_timeout_fault(
                 if response.status_code == 202:
                     normal_ids.append(str(response.json()["run_id"]))
             slow_terminal, *normal_terminal = await asyncio.gather(
-                _wait_terminal(client, slow_id, 150.0),
-                *(_wait_terminal(client, run_id, 150.0) for run_id in normal_ids),
+                _wait_terminal(
+                    client, slow_id, 150.0, health_state=health_watch.state
+                ),
+                *(
+                    _wait_terminal(
+                        client, run_id, 150.0, health_state=health_watch.state
+                    )
+                    for run_id in normal_ids
+                ),
             )
     finally:
+        await health_watch.stop()
         await stop_service(service)
     survivors = [pid for pid in service.observed_worker_pids if psutil.pid_exists(pid)]
     result: dict[str, Any] = {
@@ -2423,8 +2645,13 @@ async def run_timeout_fault(
         ),
         "residual_worker_pids": survivors,
         "process_children_before": sorted(process_children_before),
+        "health": health_watch.result(),
     }
-    result["passed"] = bool(result["timeout_isolated"] and not survivors)
+    result["abort_suite"] = bool(result["health"]["abort_suite"])
+    result["fatal_error"] = result["health"]["fatal_error"]
+    result["passed"] = bool(
+        result["timeout_isolated"] and not survivors and not result["abort_suite"]
+    )
     logger.emit("timeout_fault_end", passed=result["passed"])
     return result
 
@@ -2439,6 +2666,7 @@ async def run_ttl_fault(
         runner_mode="ttl",
         ttl_hours=0.001,
     )
+    health_watch = await RuntimeHealthWatch.start(service.base_url)
     expected_404 = 0
     preterminal_404 = 0
     terminal_rows: list[dict[str, Any]] = []
@@ -2447,7 +2675,10 @@ async def run_ttl_fault(
         content = input_path.read_bytes()
         async with httpx.AsyncClient(base_url=service.base_url, timeout=30.0) as client:
             for _ in range(100):
-                if time.monotonic() - started >= 120:
+                if (
+                    time.monotonic() - started >= 120
+                    or health_watch.state.fatal_error is not None
+                ):
                     break
                 response = await client.post(
                     "/api/v1/analyses",
@@ -2458,7 +2689,9 @@ async def run_ttl_fault(
                     continue
                 response.raise_for_status()
                 run_id = str(response.json()["run_id"])
-                terminal = await _wait_terminal(client, run_id, 30.0)
+                terminal = await _wait_terminal(
+                    client, run_id, 30.0, health_state=health_watch.state
+                )
                 if terminal["status"] == "not_found":
                     preterminal_404 += 1
                     continue
@@ -2468,6 +2701,7 @@ async def run_ttl_fault(
                 if expired.status_code == 404:
                     expected_404 += 1
     finally:
+        await health_watch.stop()
         await stop_service(service)
     log_text = service.log_path.read_text(encoding="utf-8", errors="replace")
     race_markers = [
@@ -2475,15 +2709,20 @@ async def run_ttl_fault(
         for line in log_text.splitlines()
         if "BENCH_TTL_CLEANUP_EXCEPTION" in line or "Traceback" in line
     ]
-    result = {
+    result: dict[str, Any] = {
         "service": service.metadata(),
         "submitted_terminal_n": len(terminal_rows),
         "expected_expiry_404_n": expected_404,
         "preterminal_manifest_404_n": preterminal_404,
         "manifest_race_log_markers": race_markers,
         "expected_404_separate_from_manifest_race": True,
-        "passed": preterminal_404 == 0 and not race_markers,
+        "health": health_watch.result(),
     }
+    result["abort_suite"] = bool(result["health"]["abort_suite"])
+    result["fatal_error"] = result["health"]["fatal_error"]
+    result["passed"] = bool(
+        preterminal_404 == 0 and not race_markers and not result["abort_suite"]
+    )
     logger.emit("ttl_fault_end", passed=result["passed"], expected_404=expected_404)
     return result
 
@@ -2496,6 +2735,7 @@ async def run_contract_faults(
         data_root=session_work_root / identifier / "data",
         log_path=session_dir / "service-logs" / f"{identifier}.log",
     )
+    health_watch = await RuntimeHealthWatch.start(service.base_url)
     try:
         content = input_path.read_bytes()
         async with httpx.AsyncClient(base_url=service.base_url, timeout=30.0) as client:
@@ -2518,8 +2758,11 @@ async def run_contract_faults(
                 files={"walking": ("oversized.txt", b"x" * (64 * MiB + 1), "text/plain")},
                 timeout=60.0,
             )
-            terminal = await _wait_terminal(client, run_id, 30.0)
+            terminal = await _wait_terminal(
+                client, run_id, 30.0, health_state=health_watch.state
+            )
     finally:
+        await health_watch.stop()
         await stop_service(service)
     result: dict[str, Any] = {
         "service": service.metadata(),
@@ -2528,8 +2771,14 @@ async def run_contract_faults(
         "409": {"status": pending_result.status_code, "body": pending_result.json()},
         "413": {"status": oversized.status_code, "body": oversized.json()},
         "control_terminal": terminal,
+        "health": health_watch.result(),
     }
-    result["passed"] = all(result[code]["status"] == int(code) for code in ("422", "404", "409", "413"))
+    result["abort_suite"] = bool(result["health"]["abort_suite"])
+    result["fatal_error"] = result["health"]["fatal_error"]
+    result["passed"] = bool(
+        all(result[code]["status"] == int(code) for code in ("422", "404", "409", "413"))
+        and not result["abort_suite"]
+    )
     logger.emit("contract_faults_end", passed=result["passed"])
     return result
 
@@ -2697,6 +2946,31 @@ def _report_markdown(results: dict[str, Any]) -> str:
                 f"{repetition['average_effective_concurrency']} | "
                 f"{resources.get('available_memory_min_bytes')} | {pagefile_growth} | "
                 f"{generator_cpu_text} | {repetition['citable']} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## Terminal persistence pressure",
+            "",
+            "| point | repetition | health n | pending median/p95/max | oldest wait median/p95/max | >=1 | >=3 | crossings to >=3 | growth observed | fatal 503 |",
+            "|---|---|---:|---|---|---:|---:|---:|---|---|",
+        ]
+    )
+    for point in results.get("points", []):
+        for repetition in point["repetitions"]:
+            backlog = repetition["terminal_persistence"]
+            pending = backlog["pending_count"]
+            waits = backlog["oldest_wait_seconds"]
+            lines.append(
+                f"| {point['sample_count']}/C={point['concurrency']} | "
+                f"{repetition['label']} | {backlog['n']} | "
+                f"{pending['median']}/{pending['p95']}/{pending['max']} | "
+                f"{waits['median']}/{waits['p95']}/{waits['max']} | "
+                f"{backlog['pending_count_ge_1_samples']} | "
+                f"{backlog['pending_count_ge_3_samples']} | "
+                f"{backlog['upward_crossings_to_ge_3']} | "
+                f"{backlog['terminal_persistence_growth_observed']} | "
+                f"{json.dumps(repetition.get('fatal_503'), ensure_ascii=False)} |"
             )
     lines.extend(
         [
@@ -2970,16 +3244,13 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
         _atomic_json(output_dir / "raw-results.json", results)
 
     if decision["run_30k"]:
-        results["contract_faults"] = await run_contract_faults(
-            inputs[30_000], output_dir, session_work_root, logger
+        fault_runners = (
+            ("contract_faults", run_contract_faults),
+            ("timeout_fault", run_timeout_fault),
+            ("ttl_fault", run_ttl_fault),
         )
-        results["timeout_fault"] = await run_timeout_fault(
-            inputs[30_000], output_dir, session_work_root, logger
-        )
-        results["ttl_fault"] = await run_ttl_fault(
-            inputs[30_000], output_dir, session_work_root, logger
-        )
-        for key in ("contract_faults", "timeout_fault", "ttl_fault"):
+        for key, runner in fault_runners:
+            results[key] = await runner(inputs[30_000], output_dir, session_work_root, logger)
             fault = results[key]
             evidence = _archive_or_clean_result(
                 fault,
@@ -2994,6 +3265,11 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             )
             if evidence is not None:
                 results["rejection_evidence_dirs"].append(evidence)
+            if fault.get("abort_suite"):
+                results["aborted_at"] = key
+                results["abort_reason"] = fault.get("fatal_error") or "fault-suite-aborted"
+                _atomic_json(output_dir / "raw-results.json", results)
+                return results
         if not matrix_had_429:
             burst = await run_repetition(
                 label="fallback-429-burst",
@@ -3027,7 +3303,11 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             if burst["abort_suite"]:
                 results["correctness_mismatch"] = oracles[30_000].mismatch
                 results["aborted_at"] = "fallback-429-burst"
-                results["abort_reason"] = "correctness-mismatch"
+                results["abort_reason"] = (
+                    "correctness-mismatch"
+                    if oracles[30_000].mismatch is not None
+                    else burst["fatal_error"] or "disk-free-below-20-gib"
+                )
                 _atomic_json(output_dir / "raw-results.json", results)
                 return results
 
@@ -3061,7 +3341,11 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
         if a2["abort_suite"]:
             results["correctness_mismatch"] = oracles[30_000].mismatch
             results["aborted_at"] = "a2-n30000-c1"
-            results["abort_reason"] = "correctness-mismatch"
+            results["abort_reason"] = (
+                "correctness-mismatch"
+                if oracles[30_000].mismatch is not None
+                else a2["fatal_error"] or "disk-free-below-20-gib"
+            )
             _atomic_json(output_dir / "raw-results.json", results)
             return results
         a1 = next(

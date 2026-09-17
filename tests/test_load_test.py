@@ -13,10 +13,13 @@ import pytest
 from bench.load_test import (
     CalibrationMonitor,
     GiB,
+    HealthObservation,
     MeasurementState,
     MiB,
     ResourceSample,
     UnsafeStoragePath,
+    _cancel_clients_on_fatal,
+    _health_probe,
     _service_path_budget,
     _status_poll_retry_allowed,
     calibration_threshold,
@@ -26,6 +29,7 @@ from bench.load_test import (
     effective_concurrency,
     generator_cpu_statistics,
     generator_is_limited,
+    health_backlog_statistics,
     latency_statistics,
     memory_inventory,
     read_available_memory_samples,
@@ -468,3 +472,79 @@ def test_status_poll_500_is_recorded_and_bounded_without_becoming_fatal() -> Non
     assert not _status_poll_retry_allowed(404, 1)
     assert state.fatal_error is None
     assert state.status_poll_anomalies[0]["status_code"] == 500
+
+
+def test_health_backlog_statistics_preserve_null_and_detect_growth() -> None:
+    rows = [
+        HealthObservation(index, 0.01, 200, pending_count=count, oldest_wait_seconds=wait)
+        for index, (count, wait) in enumerate(
+            [(0, None), (1, 0.5), (3, 2.0), (2, None), (3, 4.0)]
+        )
+    ]
+
+    summary = health_backlog_statistics(rows)
+
+    assert summary["n"] == 5
+    assert summary["pending_count"] == {"n": 5, "median": 2.0, "p95": 3.0, "max": 3.0}
+    assert summary["oldest_wait_seconds"] == {
+        "n": 5,
+        "median": 0.5,
+        "p95": 4.0,
+        "max": 4.0,
+    }
+    assert summary["pending_count_ge_1_samples"] == 4
+    assert summary["pending_count_ge_3_samples"] == 2
+    assert summary["upward_crossings_to_ge_3"] == 2
+    assert summary["terminal_persistence_growth_observed"]
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("job_supervisor_unavailable", "job_supervisor_unavailable"),
+        ("terminal_persistence_saturated", "terminal_persistence_saturated"),
+        ("unknown", "unexpected-health-503"),
+    ],
+)
+def test_health_503_is_fatal_and_cancels_clients(code: str, expected: str) -> None:
+    class Response:
+        status_code = 503
+        text = "synthetic 503"
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "error": {"code": code, "message": "synthetic"},
+                "terminal_persistence": {
+                    "pending_count": 3,
+                    "oldest_wait_seconds": None,
+                },
+            }
+
+    class Client:
+        async def get(self, _path: str, *, timeout: float) -> Response:
+            assert timeout == 2.0
+            return Response()
+
+    async def scenario() -> tuple[MeasurementState, list[HealthObservation], bool]:
+        state = MeasurementState(window_seconds=120, target=200)
+        observations: list[HealthObservation] = []
+        client_task = asyncio.create_task(asyncio.sleep(60))
+        canceller = asyncio.create_task(_cancel_clients_on_fatal(state, [client_task]))
+        await _health_probe(Client(), state, observations)  # type: ignore[arg-type]
+        await canceller
+        await asyncio.gather(client_task, return_exceptions=True)
+        return state, observations, client_task.cancelled()
+
+    state, observations, cancelled = asyncio.run(scenario())
+    assert state.fatal_error == expected
+    assert state.fatal_evidence == {
+        "reason": expected,
+        "observed_monotonic_s": observations[0].monotonic_s,
+        "status_code": 503,
+        "error_code": code,
+        "response_body": Response.json(),
+    }
+    assert observations[0].pending_count == 3
+    assert observations[0].oldest_wait_seconds is None
+    assert cancelled
