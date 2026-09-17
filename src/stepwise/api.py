@@ -20,6 +20,8 @@ from .storage import ArtifactLease, ArtifactNotFoundError, JobNotFoundError
 
 UPLOAD_CHUNK_BYTES = 64 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+_SUPERVISOR_UNAVAILABLE_CODE = "job_supervisor_unavailable"
+_SUPERVISOR_UNAVAILABLE_MESSAGE = "The job supervisor is unavailable."
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:
@@ -124,8 +126,32 @@ def create_app(
     app.state.job_manager = job_manager
     app.state.settings = resolved_settings
 
-    @app.get("/healthz")
-    def health() -> dict[str, str]:
+    @app.get(
+        "/healthz",
+        response_model=dict[str, str],
+        responses={
+            503: {
+                "description": _SUPERVISOR_UNAVAILABLE_MESSAGE,
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "error": {
+                                "code": _SUPERVISOR_UNAVAILABLE_CODE,
+                                "message": _SUPERVISOR_UNAVAILABLE_MESSAGE,
+                            }
+                        }
+                    }
+                },
+            }
+        },
+    )
+    def health() -> dict[str, str] | JSONResponse:
+        if not job_manager.supervisor_available:
+            return _error(
+                503,
+                _SUPERVISOR_UNAVAILABLE_CODE,
+                _SUPERVISOR_UNAVAILABLE_MESSAGE,
+            )
         return {"status": "ok"}
 
     @app.post("/api/v1/analyses", status_code=202)

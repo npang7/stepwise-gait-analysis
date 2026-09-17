@@ -135,6 +135,7 @@ class JobManager:
         self._lock = threading.RLock()
         self._submission_lock = threading.Lock()
         self._stop = threading.Event()
+        self._supervisor_failed = threading.Event()
         self.repository.cleanup_staging()
         self.repository.recover_incomplete()
         self.repository.cleanup_expired(result_ttl_hours)
@@ -149,6 +150,16 @@ class JobManager:
     def active_count(self) -> int:
         with self._lock:
             return len(self._active)
+
+    @property
+    def supervisor_available(self) -> bool:
+        """Return whether the in-process background supervisor loop is available."""
+
+        return (
+            not self._stop.is_set()
+            and not self._supervisor_failed.is_set()
+            and self._thread.is_alive()
+        )
 
     def _validate_upload(self, path: Path) -> None:
         if path.stat().st_size > self.max_upload_bytes:
@@ -411,6 +422,12 @@ class JobManager:
                 self._finish_active()
                 self._start_pending()
                 self._stop.wait(0.02)
+        except Exception as exc:  # noqa: BLE001 -- supervisor boundary must become observable.
+            self._supervisor_failed.set()
+            LOGGER.error(
+                "job_supervisor_failed",
+                extra={"error_type": type(exc).__name__},
+            )
         finally:
             self._shutdown_jobs()
 

@@ -80,9 +80,58 @@ class ApiTests(unittest.TestCase):
         manager = JobManager(self.data_dir, runner=successful_runner)
         try:
             with TestClient(create_app(self._settings(), manager=manager)) as client:
-                self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
+                health = client.get("/healthz")
+                self.assertEqual(health.status_code, 200)
+                self.assertEqual(health.json(), {"status": "ok"})
                 self.assertEqual(client.get("/docs").status_code, 200)
-                self.assertIn("/api/v1/analyses", client.get("/openapi.json").json()["paths"])
+                paths = client.get("/openapi.json").json()["paths"]
+                self.assertIn("/api/v1/analyses", paths)
+                health_responses = paths["/healthz"]["get"]["responses"]
+                self.assertIn("503", health_responses)
+                self.assertEqual(
+                    health_responses["503"]["content"]["application/json"]["example"],
+                    {
+                        "error": {
+                            "code": "job_supervisor_unavailable",
+                            "message": "The job supervisor is unavailable.",
+                        }
+                    },
+                )
+        finally:
+            manager.close()
+
+    def test_health_reports_supervisor_failure_with_stable_error(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            manager._supervisor_failed.set()
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                response = client.get("/healthz")
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.json(),
+                {
+                    "error": {
+                        "code": "job_supervisor_unavailable",
+                        "message": "The job supervisor is unavailable.",
+                    }
+                },
+            )
+        finally:
+            manager.close()
+
+    def test_supervisor_failure_does_not_change_upload_response(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            manager._supervisor_failed.set()
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                response = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json()["status"], "queued")
         finally:
             manager.close()
 

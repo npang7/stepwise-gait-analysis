@@ -245,7 +245,24 @@ class JobManagerTests(unittest.TestCase):
         manager._pending = queue.Queue(maxsize=4)
         manager._start_failures = 0
         manager._next_start_attempt_at = 0.0
+        manager._supervisor_failed = threading.Event()
         return manager
+
+    def test_supervisor_availability_fails_closed_when_stopping_or_thread_dead(self) -> None:
+        manager = self.manager_with_active_jobs(FlakyRepository(), {})
+        manager._stop = threading.Event()
+        supervisor_thread = StubSupervisorThread()
+        manager._thread = supervisor_thread  # type: ignore[assignment]
+
+        self.assertTrue(manager.supervisor_available)
+        manager._stop.set()
+        self.assertFalse(manager.supervisor_available)
+
+        manager._stop.clear()
+        self.assertTrue(manager.supervisor_available)
+        supervisor_thread.join()
+        supervisor_thread.join()
+        self.assertFalse(manager.supervisor_available)
 
     def test_terminal_success_is_cached_until_persisted_while_other_job_finishes(self) -> None:
         first_payload = {"summary": {"job": "first"}}
@@ -751,6 +768,7 @@ class JobManagerTests(unittest.TestCase):
             },
         )
         manager._stop = threading.Event()
+        manager._thread = StubSupervisorThread()  # type: ignore[assignment]
         manager._pending.put_nowait(("pending", {"smooth_window": 3}))
 
         def fail_finish() -> None:
@@ -759,12 +777,19 @@ class JobManagerTests(unittest.TestCase):
         manager._finish_active = fail_finish  # type: ignore[method-assign]
         manager._start_pending = lambda: None  # type: ignore[method-assign]
 
+        self.assertTrue(manager.supervisor_available)
         with (
             patch("stepwise.jobs._SHUTDOWN_RETRY_TIMEOUT_SECONDS", 0.0),
-            self.assertRaisesRegex(RuntimeError, "synthetic supervisor failure"),
+            patch("stepwise.jobs.LOGGER.error") as log_error,
         ):
             manager._supervise()
 
+        self.assertTrue(manager._supervisor_failed.is_set())
+        self.assertFalse(manager.supervisor_available)
+        log_error.assert_any_call(
+            "job_supervisor_failed",
+            extra={"error_type": "RuntimeError"},
+        )
         self.assertEqual(set(manager._active), {"malformed"})
         self.assertEqual(second_process.terminate_calls, 1)
         self.assertEqual(manager._pending.qsize(), 0)
