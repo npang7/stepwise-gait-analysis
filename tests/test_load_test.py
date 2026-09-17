@@ -22,6 +22,7 @@ from bench.load_test import (
     _health_probe,
     _service_path_budget,
     _status_poll_retry_allowed,
+    calibration_failure_reason,
     calibration_threshold,
     classify_resource_gate,
     compare_drift,
@@ -150,38 +151,145 @@ def test_generator_limit_uses_single_core_and_ten_second_window() -> None:
     }
 
 
-def test_resource_gate_uses_available_memory_pagefile_growth_and_disk_floor() -> None:
-    samples = [
-        ResourceSample(
-            monotonic_s=0.0,
-            available_memory_bytes=9 * GiB,
-            pagefile_used_bytes=4 * GiB,
-            disk_free_bytes=30 * GiB,
+def _resource_sample(
+    *,
+    second: float,
+    available: int = 9 * GiB,
+    pagefile: int = 4 * GiB,
+    memcompression: int | None = 800 * MiB,
+    disk: int = 30 * GiB,
+) -> ResourceSample:
+    return ResourceSample(
+        monotonic_s=second,
+        available_memory_bytes=available,
+        pagefile_used_bytes=pagefile,
+        disk_free_bytes=disk,
+        memcompression_pids=(3956,) if memcompression is not None else (),
+        memcompression_rss_bytes=memcompression,
+        memcompression_error=(
+            None if memcompression is not None else "MemCompression process not found"
         ),
-        ResourceSample(
-            monotonic_s=1.0,
-            available_memory_bytes=1 * GiB,
-            pagefile_used_bytes=4 * GiB + 201 * MiB,
-            disk_free_bytes=30 * GiB,
-        ),
-    ]
-    gate = classify_resource_gate(samples)
-    assert gate["memory_pressure"]
-    assert gate["available_memory_below_2_gib"]
-    assert gate["pagefile_growth_over_200_mib"]
-    assert not gate["disk_below_20_gib"]
+    )
 
-    disk_gate = classify_resource_gate(
+
+def test_resource_gate_rejects_pagefile_displacement_without_low_available() -> None:
+    gate = classify_resource_gate(
         [
-            ResourceSample(
-                monotonic_s=0.0,
-                available_memory_bytes=9 * GiB,
-                pagefile_used_bytes=4 * GiB,
-                disk_free_bytes=19 * GiB,
-            )
+            _resource_sample(second=0.0),
+            _resource_sample(second=1.0, pagefile=4 * GiB + 201 * MiB),
         ]
     )
+
+    assert gate["memory_pressure"]
+    assert not gate["available_memory_below_2_gib"]
+    assert gate["pagefile_growth_over_200_mib"]
+    assert gate["memory_displacement_over_200_mib"]
+    assert gate["memory_displacement_bytes"] == 201 * MiB
+
+
+def test_resource_gate_rejects_memcompression_displacement() -> None:
+    gate = classify_resource_gate(
+        [
+            _resource_sample(second=0.0),
+            _resource_sample(second=1.0, memcompression=800 * MiB + 201 * MiB),
+        ]
+    )
+
+    assert gate["memory_pressure"]
+    assert not gate["pagefile_growth_over_200_mib"]
+    assert gate["memcompression_measured"]
+    assert gate["memcompression_growth_bytes"] == 201 * MiB
+    assert gate["memory_displacement_bytes"] == 201 * MiB
+
+
+def test_low_available_without_displacement_remains_citable_and_is_flagged() -> None:
+    gate = classify_resource_gate(
+        [
+            _resource_sample(second=0.0),
+            _resource_sample(second=1.0, available=1 * GiB),
+        ]
+    )
+
+    assert not gate["memory_pressure"]
+    assert gate["available_memory_below_2_gib"]
+    assert gate["low_available_without_displacement_evidence"]
+    assert gate["memory_displacement_bytes"] == 0
+
+
+def test_missing_memcompression_uses_pagefile_and_reports_missing() -> None:
+    gate = classify_resource_gate(
+        [
+            _resource_sample(second=0.0, memcompression=None),
+            _resource_sample(
+                second=1.0,
+                pagefile=4 * GiB + 50 * MiB,
+                memcompression=None,
+            ),
+        ]
+    )
+
+    assert not gate["memcompression_measured"]
+    assert gate["memcompression_growth_bytes"] is None
+    assert gate["memory_displacement_bytes"] == 50 * MiB
+    assert gate["memcompression_measurement_note"] == "MemCompression was not measurable"
+
+
+def test_resource_gate_keeps_disk_floor_as_suite_abort() -> None:
+
+    disk_gate = classify_resource_gate([_resource_sample(second=0.0, disk=19 * GiB)])
     assert disk_gate["abort_suite"]
+
+
+def test_calibration_failure_only_uses_job_and_required_rss_peaks() -> None:
+    pressure = classify_resource_gate(
+        [
+            _resource_sample(second=0.0),
+            _resource_sample(
+                second=1.0,
+                available=1 * GiB,
+                memcompression=800 * MiB + 250 * MiB,
+            ),
+        ]
+    )
+    assert pressure["memory_pressure"]
+    assert calibration_failure_reason(
+        job_failure=None,
+        upload_sample_count=1,
+        parent_peak_rss_bytes=1,
+        worker_peak_rss_bytes=1,
+    ) is None
+    assert "job failed" in str(
+        calibration_failure_reason(
+            job_failure="job failed",
+            upload_sample_count=1,
+            parent_peak_rss_bytes=1,
+            worker_peak_rss_bytes=1,
+        )
+    )
+    assert "generator upload RSS peak" in str(
+        calibration_failure_reason(
+            job_failure=None,
+            upload_sample_count=0,
+            parent_peak_rss_bytes=1,
+            worker_peak_rss_bytes=1,
+        )
+    )
+    assert "service parent RSS peak" in str(
+        calibration_failure_reason(
+            job_failure=None,
+            upload_sample_count=1,
+            parent_peak_rss_bytes=0,
+            worker_peak_rss_bytes=1,
+        )
+    )
+    assert "worker RSS peak" in str(
+        calibration_failure_reason(
+            job_failure=None,
+            upload_sample_count=1,
+            parent_peak_rss_bytes=1,
+            worker_peak_rss_bytes=0,
+        )
+    )
 
 
 def test_calibration_uses_10ms_for_upload_and_50ms_otherwise() -> None:
@@ -278,6 +386,11 @@ def test_brief_contains_in_place_errata_and_revision_record() -> None:
     assert "修订记录" in brief
     assert "有效并发" in brief
     assert "每个 repetition" in brief and "全新服务进程" in brief
+    assert "displacement" in instructions
+    assert "MemCompression" in instructions
+    assert "低可用内存，无置换证据" in instructions
+    assert "Page Reads/sec" in brief and "永不作为判废依据" in brief
+    assert "第五次" in brief
 
 
 def test_each_repetition_uses_a_fresh_service_process(tmp_path: Path) -> None:

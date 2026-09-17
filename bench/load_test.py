@@ -322,6 +322,70 @@ class ResourceSample:
     pages_output_per_second: float | None = None
     page_reads_per_second: float | None = None
     page_writes_per_second: float | None = None
+    memcompression_pids: tuple[int, ...] = ()
+    memcompression_rss_bytes: int | None = None
+    memcompression_error: str | None = None
+
+
+class MemCompressionSampler:
+    """Cache and recover Windows' in-memory compression-store process handles."""
+
+    PROCESS_NAME = "memcompression"
+
+    def __init__(self) -> None:
+        self._processes: dict[int, psutil.Process] = {}
+        self.last_discovery_error: str | None = None
+
+    def discover(self) -> None:
+        found: dict[int, psutil.Process] = {}
+        errors: list[str] = []
+        try:
+            processes = psutil.process_iter(["name"])
+            for process in processes:
+                try:
+                    name = str(process.info.get("name") or "").lower()
+                except (psutil.AccessDenied, psutil.NoSuchProcess) as exc:
+                    errors.append(f"PID {process.pid}: {type(exc).__name__}: {exc}")
+                    continue
+                if name == self.PROCESS_NAME:
+                    found[process.pid] = process
+        except psutil.Error as exc:
+            errors.append(f"{type(exc).__name__}: {exc}")
+        self._processes = found
+        if found:
+            self.last_discovery_error = "; ".join(errors) or None
+        else:
+            errors.append("MemCompression process not found")
+            self.last_discovery_error = "; ".join(errors)
+
+    def collect(self) -> tuple[tuple[int, ...], int | None, str | None]:
+        if not self._processes:
+            self.discover()
+        rss_by_pid: dict[int, int] = {}
+        errors: list[str] = []
+        for pid, process in tuple(self._processes.items()):
+            try:
+                rss_by_pid[pid] = int(process.memory_info().rss)
+            except (psutil.AccessDenied, psutil.NoSuchProcess) as exc:
+                self._processes.pop(pid, None)
+                errors.append(f"PID {pid}: {type(exc).__name__}: {exc}")
+        if not rss_by_pid and self._processes == {}:
+            self.discover()
+            for pid, process in tuple(self._processes.items()):
+                try:
+                    rss_by_pid[pid] = int(process.memory_info().rss)
+                except (psutil.AccessDenied, psutil.NoSuchProcess) as exc:
+                    self._processes.pop(pid, None)
+                    errors.append(f"PID {pid}: {type(exc).__name__}: {exc}")
+        if not rss_by_pid:
+            if self.last_discovery_error:
+                errors.append(self.last_discovery_error)
+            return (), None, "; ".join(dict.fromkeys(errors))
+        return (
+            tuple(sorted(rss_by_pid)),
+            sum(rss_by_pid.values()),
+            "; ".join(dict.fromkeys(errors)) or self.last_discovery_error,
+        )
 
 
 class _PdhValueUnion(ctypes.Union):
@@ -846,7 +910,12 @@ def _cpu_time(process: psutil.Process) -> float:
 class ResourceMonitor:
     """Sample the generator, service tree, memory, pagefile, disk, and PDH at 1 Hz."""
 
-    def __init__(self, service: ServiceHandle, disk_path: Path) -> None:
+    def __init__(
+        self,
+        service: ServiceHandle,
+        disk_path: Path,
+        memcompression: MemCompressionSampler | None = None,
+    ) -> None:
         self.service = service
         self.disk_path = disk_path
         self.samples: list[ResourceSample] = []
@@ -854,6 +923,7 @@ class ResourceMonitor:
         self._stop = asyncio.Event()
         self._previous_cpu: dict[int, tuple[float, float]] = {}
         self._pdh = PdhSampler()
+        self._memcompression = memcompression or MemCompressionSampler()
 
     def _cpu_percent(self, process: psutil.Process, now: float) -> float | None:
         try:
@@ -906,6 +976,9 @@ class ResourceMonitor:
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             pass
         pdh_values = self._pdh.collect()
+        memcompression_pids, memcompression_rss, memcompression_error = (
+            self._memcompression.collect()
+        )
         sample = ResourceSample(
             monotonic_s=now,
             available_memory_bytes=int(virtual.available),
@@ -926,6 +999,9 @@ class ResourceMonitor:
             pages_output_per_second=pdh_values["pages_output_per_second"],
             page_reads_per_second=pdh_values["page_reads_per_second"],
             page_writes_per_second=pdh_values["page_writes_per_second"],
+            memcompression_pids=memcompression_pids,
+            memcompression_rss_bytes=memcompression_rss,
+            memcompression_error=memcompression_error,
         )
         self.samples.append(sample)
         return sample
@@ -963,18 +1039,27 @@ class CalibrationSample:
     available_memory_bytes: int
     pagefile_used_bytes: int
     disk_free_bytes: int
+    memcompression_pids: tuple[int, ...]
+    memcompression_rss_bytes: int | None
+    memcompression_error: str | None
 
 
 class CalibrationMonitor:
     """High-frequency RSS sampler used only by the two single-job calibrations."""
 
-    def __init__(self, service: ServiceHandle, disk_path: Path) -> None:
+    def __init__(
+        self,
+        service: ServiceHandle,
+        disk_path: Path,
+        memcompression: MemCompressionSampler | None = None,
+    ) -> None:
         self.service = service
         self.disk_path = disk_path
         self.phase = "idle"
         self.samples: list[CalibrationSample] = []
         self.errors: list[str] = []
         self._stop = asyncio.Event()
+        self._memcompression = memcompression or MemCompressionSampler()
 
     @property
     def interval_seconds(self) -> float:
@@ -1015,6 +1100,9 @@ class CalibrationMonitor:
                     worker_pids.append(descendant.pid)
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             pass
+        memcompression_pids, memcompression_rss, memcompression_error = (
+            self._memcompression.collect()
+        )
         sample = CalibrationSample(
             monotonic_s=time.monotonic(),
             phase=self.phase,
@@ -1027,6 +1115,9 @@ class CalibrationMonitor:
             available_memory_bytes=int(psutil.virtual_memory().available),
             pagefile_used_bytes=int(psutil.swap_memory().used),
             disk_free_bytes=int(psutil.disk_usage(str(self.disk_path.resolve())).free),
+            memcompression_pids=memcompression_pids,
+            memcompression_rss_bytes=memcompression_rss,
+            memcompression_error=memcompression_error,
         )
         self.samples.append(sample)
         return sample
@@ -1138,7 +1229,12 @@ def resource_statistics(samples: list[ResourceSample]) -> dict[str, Any]:
             "num_page_faults contains soft and hard faults and is not reported as hard faults"
         ),
     }
-    for field_name in ("pages_input_per_second", "pages_output_per_second"):
+    for field_name in (
+        "pages_input_per_second",
+        "pages_output_per_second",
+        "page_reads_per_second",
+        "page_writes_per_second",
+    ):
         values = [
             float(getattr(sample, field_name))
             for sample in samples
@@ -1316,6 +1412,12 @@ def classify_resource_gate(samples: list[ResourceSample]) -> dict[str, Any]:
             "memory_pressure": False,
             "available_memory_below_2_gib": False,
             "pagefile_growth_over_200_mib": False,
+            "memory_displacement_over_200_mib": False,
+            "memory_displacement_bytes": 0,
+            "memcompression_measured": False,
+            "memcompression_growth_bytes": None,
+            "memcompression_measurement_note": "MemCompression was not measurable",
+            "low_available_without_displacement_evidence": False,
             "disk_below_20_gib": False,
             "abort_suite": False,
         }
@@ -1324,12 +1426,59 @@ def classify_resource_gate(samples: list[ResourceSample]) -> dict[str, Any]:
     pagefile_max = max(sample.pagefile_used_bytes for sample in samples)
     disk_low = min(sample.disk_free_bytes for sample in samples)
     available_gate = available_low < MIN_MEASUREMENT_AVAILABLE_BYTES
-    pagefile_gate = pagefile_max - pagefile_start > MAX_PAGEFILE_GROWTH_BYTES
+    pagefile_growth = max(0, pagefile_max - pagefile_start)
+    pagefile_gate = pagefile_growth > MAX_PAGEFILE_GROWTH_BYTES
+    memcompression_start = samples[0].memcompression_rss_bytes
+    memcompression_values = [
+        int(sample.memcompression_rss_bytes)
+        for sample in samples
+        if sample.memcompression_rss_bytes is not None
+    ]
+    memcompression_measured = memcompression_start is not None
+    memcompression_max = max(memcompression_values) if memcompression_values else None
+    memcompression_end = samples[-1].memcompression_rss_bytes
+    memcompression_growth = (
+        max(0, int(memcompression_max) - int(memcompression_start))
+        if memcompression_start is not None and memcompression_max is not None
+        else None
+    )
+    displacement = pagefile_growth + (memcompression_growth or 0)
+    displacement_gate = displacement > MAX_PAGEFILE_GROWTH_BYTES
     disk_gate = disk_low < MIN_DISK_FREE_BYTES
+    memcompression_errors = sorted(
+        {
+            str(sample.memcompression_error)
+            for sample in samples
+            if sample.memcompression_error
+        }
+    )
+    memcompression_pids = sorted(
+        {pid for sample in samples for pid in sample.memcompression_pids}
+    )
     return {
-        "memory_pressure": available_gate or pagefile_gate,
+        "memory_pressure": displacement_gate,
         "available_memory_below_2_gib": available_gate,
         "pagefile_growth_over_200_mib": pagefile_gate,
+        "pagefile_growth_bytes": pagefile_growth,
+        "memcompression_measured": memcompression_measured,
+        "memcompression_pids": memcompression_pids,
+        "memcompression_rss_start_bytes": memcompression_start,
+        "memcompression_rss_end_bytes": memcompression_end,
+        "memcompression_rss_max_bytes": memcompression_max,
+        "memcompression_growth_bytes": memcompression_growth,
+        "memcompression_sample_count": len(memcompression_values),
+        "memcompression_missing_sample_count": len(samples) - len(memcompression_values),
+        "memcompression_errors": memcompression_errors,
+        "memcompression_measurement_note": (
+            "MemCompression RSS measured"
+            if memcompression_measured
+            else "MemCompression was not measurable"
+        ),
+        "memory_displacement_bytes": displacement,
+        "memory_displacement_over_200_mib": displacement_gate,
+        "low_available_without_displacement_evidence": (
+            available_gate and not displacement_gate
+        ),
         "disk_below_20_gib": disk_gate,
         "abort_suite": disk_gate,
         "available_memory_min_bytes": available_low,
@@ -1338,6 +1487,29 @@ def classify_resource_gate(samples: list[ResourceSample]) -> dict[str, Any]:
         "pagefile_used_max_bytes": pagefile_max,
         "disk_free_min_bytes": disk_low,
     }
+
+
+def calibration_failure_reason(
+    *,
+    job_failure: str | None,
+    upload_sample_count: int,
+    parent_peak_rss_bytes: int,
+    worker_peak_rss_bytes: int,
+) -> str | None:
+    """Validate structural calibration output without applying timing hygiene gates."""
+
+    if job_failure is not None:
+        return job_failure
+    missing: list[str] = []
+    if upload_sample_count <= 0:
+        missing.append("generator upload RSS peak")
+    if parent_peak_rss_bytes <= 0:
+        missing.append("service parent RSS peak")
+    if worker_peak_rss_bytes <= 0:
+        missing.append("worker RSS peak")
+    if missing:
+        return "calibration could not obtain required peaks: " + ", ".join(missing)
+    return None
 
 
 def compare_drift(a1_throughputs: list[float], a2_throughput: float) -> dict[str, Any]:
@@ -1714,6 +1886,7 @@ async def run_memory_calibration(
     work_root: Path,
     repository_root: Path,
     logger: RunLogger,
+    memcompression: MemCompressionSampler,
 ) -> dict[str, Any]:
     label = f"calibration-n{sample_count}"
     identifier = f"c{sample_count // 1000}-cal-{uuid.uuid4().hex[:4]}"
@@ -1722,7 +1895,7 @@ async def run_memory_calibration(
         data_root=data_root,
         log_path=session_dir / "service-logs" / f"{identifier}.log",
     )
-    monitor = CalibrationMonitor(service, data_root)
+    monitor = CalibrationMonitor(service, data_root, memcompression)
     monitor_task = asyncio.create_task(monitor.run())
     baseline = int(psutil.Process(os.getpid()).memory_info().rss)
     upload_started: float | None = None
@@ -1730,6 +1903,7 @@ async def run_memory_calibration(
     terminal: dict[str, Any] | None = None
     failure: str | None = None
     run_id: str | None = None
+    result_extraction: dict[str, Any] = {"attempted": False}
     health_state: MeasurementState | None = None
     health_observations: list[HealthObservation] = []
     try:
@@ -1757,19 +1931,29 @@ async def run_memory_calibration(
                         failure = f"calibration job did not succeed: {terminal}"
                     else:
                         monitor.phase = "result-extraction"
-                        result_response = await client.get(f"/api/v1/analyses/{run_id}/result")
-                        steps_response = await client.get(
-                            f"/api/v1/analyses/{run_id}/artifacts/gait_steps_analysis.csv"
-                        )
-                        if (
-                            result_response.status_code != 200
-                            or steps_response.status_code != 200
-                        ):
-                            failure = (
-                                "calibration result extraction failed: "
-                                f"result={result_response.status_code}, "
-                                f"steps={steps_response.status_code}"
+                        try:
+                            result_response = await client.get(
+                                f"/api/v1/analyses/{run_id}/result"
                             )
+                            steps_response = await client.get(
+                                f"/api/v1/analyses/{run_id}/artifacts/"
+                                "gait_steps_analysis.csv"
+                            )
+                            result_extraction = {
+                                "attempted": True,
+                                "result_status": result_response.status_code,
+                                "steps_status": steps_response.status_code,
+                                "passed": (
+                                    result_response.status_code == 200
+                                    and steps_response.status_code == 200
+                                ),
+                            }
+                        except httpx.HTTPError as exc:
+                            result_extraction = {
+                                "attempted": True,
+                                "passed": False,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
     except (OSError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
         failure = f"{type(exc).__name__}: {exc}"
     finally:
@@ -1797,14 +1981,19 @@ async def run_memory_calibration(
             available_memory_bytes=sample.available_memory_bytes,
             pagefile_used_bytes=sample.pagefile_used_bytes,
             disk_free_bytes=sample.disk_free_bytes,
+            memcompression_pids=sample.memcompression_pids,
+            memcompression_rss_bytes=sample.memcompression_rss_bytes,
+            memcompression_error=sample.memcompression_error,
         )
         for sample in monitor.samples
     ]
     gate = classify_resource_gate(gate_samples)
-    if gate["memory_pressure"]:
-        failure = failure or "calibration triggered the runtime memory/pagefile gate"
-    if gate["disk_below_20_gib"]:
-        failure = failure or "calibration disk free space fell below 20 GiB"
+    failure = calibration_failure_reason(
+        job_failure=failure,
+        upload_sample_count=len(upload_samples),
+        parent_peak_rss_bytes=parent_peak,
+        worker_peak_rss_bytes=worker_peak,
+    )
     health_result = (
         _health_watch_result(health_state, health_observations)
         if health_state is not None
@@ -1816,8 +2005,12 @@ async def run_memory_calibration(
             "abort_suite": False,
         }
     )
-    if health_result["fatal_error"]:
-        failure = failure or str(health_result["fatal_error"])
+    abort_suite = bool(gate["disk_below_20_gib"] or health_result["abort_suite"])
+    abort_reason = (
+        str(health_result["fatal_error"])
+        if health_result["fatal_error"]
+        else ("disk-free-below-20-gib" if gate["disk_below_20_gib"] else None)
+    )
     result: dict[str, Any] = {
         "sample_count": sample_count,
         "label": label,
@@ -1826,6 +2019,7 @@ async def run_memory_calibration(
         "input_bytes": input_path.stat().st_size,
         "run_id": run_id,
         "terminal": terminal,
+        "result_extraction": result_extraction,
         "service": service.metadata(),
         "generator_baseline_rss_bytes": baseline,
         "generator_upload_peak_rss_bytes": upload_peak,
@@ -1838,11 +2032,14 @@ async def run_memory_calibration(
         "worker_peak_rss_bytes": worker_peak,
         "parent_component_peak_rss_bytes": parent_peak,
         "resource_gate": gate,
+        "timing_memory_gate_applicable": False,
         "monitor_errors": monitor.errors,
         "samples": [asdict(sample) for sample in monitor.samples],
         "health": health_result,
         "failure": failure,
         "passed": failure is None,
+        "abort_suite": abort_suite,
+        "abort_reason": abort_reason,
     }
     logger.emit(
         "memory_calibration_end",
@@ -2278,7 +2475,7 @@ def _repetition_summary(
     )
     invalid_reasons: list[str] = []
     if resource_stats.get("memory_pressure"):
-        invalid_reasons.append("memory-pressure")
+        invalid_reasons.append("memory-displacement-pressure")
     if resource_stats.get("generator_limited"):
         invalid_reasons.append("generator-limited")
     if disk_evidence:
@@ -2287,6 +2484,9 @@ def _repetition_summary(
         invalid_reasons.append("fatal-error")
     if backlog_stats["terminal_persistence_growth_observed"]:
         invalid_reasons.append("terminal-persistence-growth-observed")
+    warnings: list[str] = []
+    if resource_stats.get("low_available_without_displacement_evidence"):
+        warnings.append("low-available-memory-without-displacement-evidence")
     accepted_run_dirs = len(
         [path for path in service.data_root.iterdir() if path.is_dir() and path.name != ".staging"]
     )
@@ -2342,6 +2542,7 @@ def _repetition_summary(
         "correctness": oracle.summary(),
         "fatal_error": state.fatal_error,
         "invalid_reasons": invalid_reasons,
+        "warnings": warnings,
         "citable": not invalid_reasons,
         "abort_suite": (
             bool(resource_stats.get("abort_suite"))
@@ -2364,6 +2565,7 @@ async def run_repetition(
     path_id_prefix: str,
     oracle: CorrectnessOracle,
     logger: RunLogger,
+    memcompression: MemCompressionSampler,
 ) -> dict[str, Any]:
     repetition_id = f"{path_id_prefix}-{uuid.uuid4().hex[:4]}"
     session_work_root.mkdir(parents=True, exist_ok=True)
@@ -2378,7 +2580,7 @@ async def run_repetition(
         disk_free_bytes=disk_before,
     )
     service = await start_service(data_root=data_root, log_path=log_path)
-    monitor = ResourceMonitor(service, data_root)
+    monitor = ResourceMonitor(service, data_root, memcompression)
     state = MeasurementState(window_seconds=window_seconds, target=target)
     health: list[HealthObservation] = []
     rejections: list[RejectionObservation] = []
@@ -2583,8 +2785,40 @@ async def _wait_terminal(
     return {"run_id": run_id, "status": "client_timeout"}
 
 
+def _fault_measurement_context(
+    monitor: ResourceMonitor, health: dict[str, Any]
+) -> dict[str, Any]:
+    resources = resource_statistics(monitor.samples)
+    invalid_reasons: list[str] = []
+    if resources["memory_pressure"]:
+        invalid_reasons.append("memory-displacement-pressure")
+    if resources["generator_limited"]:
+        invalid_reasons.append("generator-limited")
+    if resources["disk_below_20_gib"]:
+        invalid_reasons.append("environmental-disk-failure")
+    backlog = health.get("terminal_persistence", {})
+    if backlog.get("terminal_persistence_growth_observed"):
+        invalid_reasons.append("terminal-persistence-growth-observed")
+    warnings = (
+        ["low-available-memory-without-displacement-evidence"]
+        if resources["low_available_without_displacement_evidence"]
+        else []
+    )
+    return {
+        "resources": resources,
+        "resource_samples": [asdict(sample) for sample in monitor.samples],
+        "invalid_reasons": invalid_reasons,
+        "warnings": warnings,
+        "citable": not invalid_reasons,
+    }
+
+
 async def run_timeout_fault(
-    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
+    input_path: Path,
+    session_dir: Path,
+    session_work_root: Path,
+    logger: RunLogger,
+    memcompression: MemCompressionSampler,
 ) -> dict[str, Any]:
     identifier = f"f-time-{uuid.uuid4().hex[:4]}"
     service = await start_service(
@@ -2593,6 +2827,8 @@ async def run_timeout_fault(
         runner_mode="slow",
     )
     health_watch = await RuntimeHealthWatch.start(service.base_url)
+    monitor = ResourceMonitor(service, service.data_root, memcompression)
+    monitor_task = asyncio.create_task(monitor.run())
     process_children_before = set(service.observed_worker_pids)
     try:
         content = input_path.read_bytes()
@@ -2631,6 +2867,8 @@ async def run_timeout_fault(
             )
     finally:
         await health_watch.stop()
+        monitor.stop()
+        await monitor_task
         await stop_service(service)
     survivors = [pid for pid in service.observed_worker_pids if psutil.pid_exists(pid)]
     result: dict[str, Any] = {
@@ -2649,15 +2887,25 @@ async def run_timeout_fault(
     }
     result["abort_suite"] = bool(result["health"]["abort_suite"])
     result["fatal_error"] = result["health"]["fatal_error"]
-    result["passed"] = bool(
-        result["timeout_isolated"] and not survivors and not result["abort_suite"]
+    context = _fault_measurement_context(monitor, result["health"])
+    result.update(context)
+    result["abort_suite"] = bool(
+        result["abort_suite"] or result["resources"]["abort_suite"]
+    )
+    result["passed"] = bool(result["timeout_isolated"] and not survivors)
+    result["citable"] = bool(
+        result["passed"] and not result["invalid_reasons"] and not result["abort_suite"]
     )
     logger.emit("timeout_fault_end", passed=result["passed"])
     return result
 
 
 async def run_ttl_fault(
-    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
+    input_path: Path,
+    session_dir: Path,
+    session_work_root: Path,
+    logger: RunLogger,
+    memcompression: MemCompressionSampler,
 ) -> dict[str, Any]:
     identifier = f"f-ttl-{uuid.uuid4().hex[:4]}"
     service = await start_service(
@@ -2667,6 +2915,8 @@ async def run_ttl_fault(
         ttl_hours=0.001,
     )
     health_watch = await RuntimeHealthWatch.start(service.base_url)
+    monitor = ResourceMonitor(service, service.data_root, memcompression)
+    monitor_task = asyncio.create_task(monitor.run())
     expected_404 = 0
     preterminal_404 = 0
     terminal_rows: list[dict[str, Any]] = []
@@ -2702,6 +2952,8 @@ async def run_ttl_fault(
                     expected_404 += 1
     finally:
         await health_watch.stop()
+        monitor.stop()
+        await monitor_task
         await stop_service(service)
     log_text = service.log_path.read_text(encoding="utf-8", errors="replace")
     race_markers = [
@@ -2720,15 +2972,25 @@ async def run_ttl_fault(
     }
     result["abort_suite"] = bool(result["health"]["abort_suite"])
     result["fatal_error"] = result["health"]["fatal_error"]
-    result["passed"] = bool(
-        preterminal_404 == 0 and not race_markers and not result["abort_suite"]
+    context = _fault_measurement_context(monitor, result["health"])
+    result.update(context)
+    result["abort_suite"] = bool(
+        result["abort_suite"] or result["resources"]["abort_suite"]
+    )
+    result["passed"] = bool(preterminal_404 == 0 and not race_markers)
+    result["citable"] = bool(
+        result["passed"] and not result["invalid_reasons"] and not result["abort_suite"]
     )
     logger.emit("ttl_fault_end", passed=result["passed"], expected_404=expected_404)
     return result
 
 
 async def run_contract_faults(
-    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
+    input_path: Path,
+    session_dir: Path,
+    session_work_root: Path,
+    logger: RunLogger,
+    memcompression: MemCompressionSampler,
 ) -> dict[str, Any]:
     identifier = f"f-http-{uuid.uuid4().hex[:4]}"
     service = await start_service(
@@ -2736,6 +2998,8 @@ async def run_contract_faults(
         log_path=session_dir / "service-logs" / f"{identifier}.log",
     )
     health_watch = await RuntimeHealthWatch.start(service.base_url)
+    monitor = ResourceMonitor(service, service.data_root, memcompression)
+    monitor_task = asyncio.create_task(monitor.run())
     try:
         content = input_path.read_bytes()
         async with httpx.AsyncClient(base_url=service.base_url, timeout=30.0) as client:
@@ -2763,6 +3027,8 @@ async def run_contract_faults(
             )
     finally:
         await health_watch.stop()
+        monitor.stop()
+        await monitor_task
         await stop_service(service)
     result: dict[str, Any] = {
         "service": service.metadata(),
@@ -2775,9 +3041,16 @@ async def run_contract_faults(
     }
     result["abort_suite"] = bool(result["health"]["abort_suite"])
     result["fatal_error"] = result["health"]["fatal_error"]
+    context = _fault_measurement_context(monitor, result["health"])
+    result.update(context)
+    result["abort_suite"] = bool(
+        result["abort_suite"] or result["resources"]["abort_suite"]
+    )
     result["passed"] = bool(
         all(result[code]["status"] == int(code) for code in ("422", "404", "409", "413"))
-        and not result["abort_suite"]
+    )
+    result["citable"] = bool(
+        result["passed"] and not result["invalid_reasons"] and not result["abort_suite"]
     )
     logger.emit("contract_faults_end", passed=result["passed"])
     return result
@@ -2797,6 +3070,27 @@ def _format_latency_summary(stats: dict[str, Any]) -> str:
     return (
         f"n={stats['n']}; p50={stats['p50']}; p90={stats['p90']}; "
         f"max={stats['max']}"
+    )
+
+
+def _format_memory_evidence(resources: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    memcompression_growth = resources.get("memcompression_growth_bytes")
+    memcompression_text = (
+        str(memcompression_growth)
+        if memcompression_growth is not None
+        else "unmeasured"
+    )
+    note = (
+        "低可用内存，无置换证据"
+        if resources.get("low_available_without_displacement_evidence")
+        else str(resources.get("memcompression_measurement_note", ""))
+    )
+    return (
+        str(resources.get("available_memory_min_bytes")),
+        str(resources.get("pagefile_growth_bytes")),
+        memcompression_text,
+        str(resources.get("memory_displacement_bytes")),
+        note,
     )
 
 
@@ -2860,6 +3154,13 @@ def _report_markdown(results: dict[str, Any]) -> str:
                     f"- Single-request generator RSS increment peak: "
                     f"`{calibration['generator_upload_increment_peak_bytes']}` bytes"
                 ),
+                (
+                    "- Calibration memory observation (not a timing gate): "
+                    f"available min `{calibration['resource_gate'].get('available_memory_min_bytes')}`, "
+                    f"pagefile delta `{calibration['resource_gate'].get('pagefile_growth_bytes')}`, "
+                    f"MemCompression delta `{calibration['resource_gate'].get('memcompression_growth_bytes')}`, "
+                    f"displacement `{calibration['resource_gate'].get('memory_displacement_bytes')}` bytes"
+                ),
                 f"- Formula: `{threshold['formula']}` bytes",
                 "",
             ]
@@ -2876,14 +3177,14 @@ def _report_markdown(results: dict[str, Any]) -> str:
             ]
         )
     if results.get("skipped_points"):
-        lines.extend(
-            [
-                "Skipped subsets: `"
-                + ", ".join(row["subset"] for row in results["skipped_points"])
-                + "`.",
-                "",
-            ]
-        )
+        lines.extend(["Skipped subsets:", ""])
+        for row in results["skipped_points"]:
+            lines.append(
+                f"- `{row['subset']}`: available `{row['available_bytes']}`, "
+                f"threshold `{row['threshold_bytes']}`, deficit `{row['deficit_bytes']}` bytes; "
+                f"formula `{row['formula']}`."
+            )
+        lines.append("")
     lines.extend(
         [
             "## Matrix",
@@ -2906,8 +3207,8 @@ def _report_markdown(results: dict[str, Any]) -> str:
             [
                 f"### {point['sample_count']} samples, C={point['concurrency']}",
                 "",
-                "| repetition | service PID | n | throughput jobs/min | end-to-end | queue | compute | 429 count | 429 latency | status-poll 500 | effective C | available min bytes | pagefile growth bytes | generator CPU p50/p95/max | citable |",
-                "|---|---:|---:|---:|---|---|---|---:|---|---:|---:|---:|---:|---|---|",
+                "| repetition | service PID | n | throughput jobs/min | end-to-end | queue | compute | 429 count | 429 latency | status-poll 500 | effective C | available min | Δpagefile | ΔMemCompression | displacement | memory note | Page Reads median/max | Pages Input median/max | generator CPU p50/p95/max | citable |",
+                "|---|---:|---:|---:|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|",
             ]
         )
         for repetition in point["repetitions"]:
@@ -2928,10 +3229,9 @@ def _report_markdown(results: dict[str, Any]) -> str:
                 compute = _format_latency_summary(formal["compute_seconds"])
             rejected = repetition["rejections_429"]
             resources = repetition["resources"]
-            pagefile_growth = (
-                int(resources.get("pagefile_used_max_bytes", 0))
-                - int(resources.get("pagefile_used_start_bytes", 0))
-            )
+            memory_cells = _format_memory_evidence(resources)
+            page_reads = resources.get("page_reads_per_second", {})
+            pages_input = resources.get("pages_input_per_second", {})
             generator_cpu = resources.get("generator_cpu", {})
             generator_cpu_text = (
                 f"{generator_cpu.get('p50')}/{generator_cpu.get('p95')}/"
@@ -2944,7 +3244,9 @@ def _report_markdown(results: dict[str, Any]) -> str:
                 f"{_format_latency_summary(rejected['latency_seconds'])} | "
                 f"{repetition.get('status_poll_500_count', 0)} | "
                 f"{repetition['average_effective_concurrency']} | "
-                f"{resources.get('available_memory_min_bytes')} | {pagefile_growth} | "
+                f"{' | '.join(memory_cells)} | "
+                f"{page_reads.get('median')}/{page_reads.get('max')} | "
+                f"{pages_input.get('median')}/{pages_input.get('max')} | "
                 f"{generator_cpu_text} | {repetition['citable']} |"
             )
     lines.extend(
@@ -2984,6 +3286,27 @@ def _report_markdown(results: dict[str, Any]) -> str:
             f"Correctness summaries: `{json.dumps(results.get('correctness', {}), ensure_ascii=False, sort_keys=True)}`",
             "",
             "## Fault tests and A2",
+            "",
+            "| scenario | available min | Δpagefile | ΔMemCompression | displacement | memory note | citable |",
+            "|---|---:|---:|---:|---:|---|---|",
+        ]
+    )
+    for name in (
+        "contract_faults",
+        "timeout_fault",
+        "ttl_fault",
+        "fallback_429_burst",
+        "a2",
+    ):
+        scenario = results.get(name)
+        if not isinstance(scenario, dict) or not isinstance(scenario.get("resources"), dict):
+            continue
+        cells = _format_memory_evidence(scenario["resources"])
+        lines.append(
+            f"| {name} | {' | '.join(cells)} | {scenario.get('citable')} |"
+        )
+    lines.extend(
+        [
             "",
             f"Contract faults: `{json.dumps(results.get('contract_faults'), ensure_ascii=False, sort_keys=True)}`",
             "",
@@ -3043,6 +3366,10 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
     session_work_root.mkdir(parents=False, exist_ok=False)
     _strict_descendant(session_work_root, storage.work_root, repository_root)
     preflight = preflight_snapshot(session_work_root)
+    memcompression = MemCompressionSampler()
+    memcompression_pids, memcompression_rss, memcompression_error = (
+        memcompression.collect()
+    )
     logger.emit(
         "storage_root_selected",
         work_root=str(storage.work_root),
@@ -3071,6 +3398,11 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             "result_ttl_hours": 24,
             "poll_interval_seconds": POLL_INTERVAL_SECONDS,
             "retry_429_seconds": RETRY_429_SECONDS,
+        },
+        "memcompression_session_discovery": {
+            "pids": memcompression_pids,
+            "rss_bytes": memcompression_rss,
+            "error": memcompression_error,
         },
         "points": [],
         "rejection_evidence_dirs": [],
@@ -3108,11 +3440,12 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             work_root=storage.work_root,
             repository_root=repository_root,
             logger=logger,
+            memcompression=memcompression,
         )
         calibrations[str(sample_count)] = calibration
         results["memory_calibrations"] = calibrations
         _atomic_json(output_dir / "raw-results.json", results)
-        if not calibration["passed"]:
+        if calibration["abort_suite"] or not calibration["passed"]:
             evidence = _archive_or_clean_result(
                 calibration,
                 citable=False,
@@ -3126,7 +3459,11 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             )
             if evidence is not None:
                 results["rejection_evidence_dirs"].append(evidence)
-            results["stopped_reason"] = f"memory_calibration_failed_{sample_count}"
+            results["stopped_reason"] = (
+                str(calibration["abort_reason"])
+                if calibration["abort_suite"]
+                else f"memory_calibration_failed_{sample_count}"
+            )
             _atomic_json(output_dir / "raw-results.json", results)
             return results
 
@@ -3150,6 +3487,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 "available_bytes": available_bytes,
                 "threshold_bytes": threshold_30k["threshold_bytes"],
                 "formula": threshold_30k["formula"],
+                "deficit_bytes": threshold_30k["threshold_bytes"] - available_bytes,
             }
         )
     if not decision["run_360k"]:
@@ -3160,6 +3498,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 "available_bytes": available_bytes,
                 "threshold_bytes": threshold_360k["threshold_bytes"],
                 "formula": threshold_360k["formula"],
+                "deficit_bytes": threshold_360k["threshold_bytes"] - available_bytes,
             }
         )
     _atomic_json(output_dir / "raw-results.json", results)
@@ -3200,6 +3539,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 ),
                 oracle=oracles[sample_count],
                 logger=logger,
+                memcompression=memcompression,
             )
             repetitions.append(repetition)
             matrix_had_429 |= repetition["rejections_429"]["count"] > 0
@@ -3250,11 +3590,17 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             ("ttl_fault", run_ttl_fault),
         )
         for key, runner in fault_runners:
-            results[key] = await runner(inputs[30_000], output_dir, session_work_root, logger)
+            results[key] = await runner(
+                inputs[30_000],
+                output_dir,
+                session_work_root,
+                logger,
+                memcompression,
+            )
             fault = results[key]
             evidence = _archive_or_clean_result(
                 fault,
-                citable=bool(fault["passed"]),
+                citable=bool(fault["citable"]),
                 full_label=key,
                 aggregate=fault,
                 work_root=storage.work_root,
@@ -3283,6 +3629,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 path_id_prefix="b429",
                 oracle=oracles[30_000],
                 logger=logger,
+                memcompression=memcompression,
             )
             results["fallback_429_burst"] = burst
             results["fallback_burst_excluded_from_throughput_table"] = True
@@ -3323,6 +3670,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             path_id_prefix="a2-30-1",
             oracle=oracles[30_000],
             logger=logger,
+            memcompression=memcompression,
         )
         a2_point = aggregate_point([a2])
         if a2["abort_suite"]:

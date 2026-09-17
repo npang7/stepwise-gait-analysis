@@ -69,11 +69,27 @@
 两次校准服务完全退出后，间隔 1 秒读取三次 available memory 并取最小值。达到
 `threshold_30k` 才运行 30k 矩阵、故障测试与 A2；达到 `threshold_360k` 才运行
 360k C=W。单个子集不达标则写入 `skipped_points`，另一个继续；两个均不达标或
-任一校准失败则停止报告。2 GiB 项就是下述运行时地板。
+任一校准失败则停止报告。校准是结构测量，只在作业本身失败或无法取得必要的
+generator、parent、worker RSS 峰值时失败。校准仍记录 available、pagefile 与
+MemCompression RSS，但完全不应用下述计时卫生 gate；低 available 或置换量超限
+本身既不构成校准失败，也不构成 suite 停止。健康探针 fatal 503 与全局 20 GiB
+磁盘下限仍按各自规则中止 suite。
 
-每个 repetition 以 1 Hz 记录可用内存、pagefile used 与磁盘余量：任一采样可用
-内存低于 2 GiB，或窗口内 pagefile used 的最大值相对起始值增长超过 200 MiB，
-该并发点标注为不可引用，但其余点继续。
+矩阵各 repetition、故障测试、429 burst 与 A2 以 1 Hz 记录可用内存、pagefile
+used、`MemCompression` 进程 RSS 与磁盘余量。单个测量窗口的置换合成量定义为：
+
+`displacement = max(0, pagefile_max - pagefile_start) + max(0, MemCompression_RSS_max - MemCompression_RSS_start)`
+
+`displacement > 200 MiB` 时，该计时点标注为不可引用；此直接证据无需与 available
+memory 联合。available memory 低于 2 GiB、但 displacement 未超过 200 MiB 时，
+该点仍可引用，同时必须显著标注“低可用内存，无置换证据”，并报告 available
+最小值、两项增长量与 displacement 合计。找不到 `MemCompression` 或无法读取其
+窗口起始 RSS 时，displacement 仅由 pagefile 增长构成，并明确标注
+“MemCompression 未能测量”，不得把缺失静默记作零。
+
+PDH `Page Reads/sec` 与 `Pages Input/sec` 会被工作负载自身的输入及 artifact 文件
+I/O 污染，因此只作为上下文数据照常采集与报告，永不作为判废依据，也不建立空闲
+基线。
 
 磁盘余量任一时刻低于 20 GiB 则中止整个 suite。每个 repetition 前后均记录
 余量；有明确低空间或磁盘 I/O 证据的 `analysis_failed` 属于环境失败，该点不可
@@ -226,9 +242,10 @@ Phase 1 有"最大上传校验期间 < 250 ms"的既有断言，**那是单请�
 - 健康检查 p50 / p95 / max
 - 每个 repetition 的服务 PID 与 process create time
 - 负载生成器 CPU p50 / p95 / max 及 10 秒滚动中位数峰值（按单核计算）
-- 可用内存最小值；pagefile used 起始、结束、最大值
+- 可用内存最小值；pagefile used 起始、结束、最大值及增长量；MemCompression
+  PID、RSS 起始/最大值及增长量；两项合成的 displacement 与缺失状态
 - PDH `Pages Input/sec` / `Pages Output/sec` 中位数与最大值；硬缺页读入页数与
-  磁盘读操作数分开报告
+  磁盘读操作数分开报告；这些 PDH 数据只作上下文，永不作为内存判废依据
 - 每个 repetition 的磁盘余量起止
 - 出现 429 时的有效并发及“在所述重试策略下测得”的吞吐标注
 
@@ -294,9 +311,8 @@ Phase 1 有"最大上传校验期间 < 250 ms"的既有断言，**那是单请�
 本节记录 owner 在执行前批准的操作指令修订；上文已就地改正，以下不是覆盖层。
 
 1. **内存与 pagefile gate。** 原 8 GiB 固定阈值没有测量依据，已由 30k 与 360k
-   单作业实测导出的两个独立门槛取代；保留测量中 2 GiB 地板和 200 MiB pagefile
-   增长 gate，防止换页静默污染延迟分布。证据保留规则只约束规则生效后产生的
-   数据，不追溯，也不得从会话日志重建已删除的测量证据。
+   单作业实测导出的两个独立门槛取代。证据保留规则只约束规则生效后产生的数据，
+   不追溯，也不得从会话日志重建已删除的测量证据。
 2. **样本量、窗口与分位数。** 删除 p99；有效 n 不足 100 时改报 p90 与最大值，
    360,000 样本点改报全部 raw values；C=1/W 窗口延长到 300 s，避免用最大值附近
    的噪声冒充高尾分位数。
@@ -304,3 +320,10 @@ Phase 1 有"最大上传校验期间 < 250 ms"的既有断言，**那是单请�
    因为 429 数量和该点实际施压强度由客户端策略共同决定。
 4. **生成器 CPU gate。** 增加按单核计算的 80% 持续占用判据，排除吞吐实际受
    负载生成器限制的测量点。
+5. **校准范围与内存置换证据。** 先前把为计时测量设计的卫生 gate 套到结构校准
+   上，属于阈值误用；校准现仅因作业失败或必要峰值缺失而失败。计时点也不再因
+   available 低于 2 GiB 单独判废，而以 pagefile 与 MemCompression RSS 增长之和
+   `displacement > 200 MiB` 为直接证据。这不是放宽标准，而是要求丢弃数据前先有
+   佐证，直接指标仍可单独判废。曾提出的“Page Reads/sec 显著高于空闲基线”因
+   被工作负载自身文件 I/O 污染且阈值未定义而撤回。此次是第五次同类修正；前四次
+   为未触碰阶段 ±5%、`|A1−A2|` 噪声底、preflight 8 GiB，以及校准误用计时规则。
