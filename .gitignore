@@ -39,4 +39,3 @@ bench-data/walk_*.txt
 bench-data/artifacts_*/
 bench-data/compare/
 bench-data/loadtest-work/
-bench-data/rejected/

@@ -24,6 +24,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -57,6 +58,11 @@ TARGET_COMPLETIONS = 200
 MATRIX = ((30_000, 1, 300.0), (30_000, 2, 300.0), (30_000, 10, 120.0),
           (30_000, 12, 120.0), (30_000, 20, 120.0), (360_000, 2, 120.0))
 SOURCE_ATTACHMENT_SHA256 = "A8A0D5C6B0B509516421FC18555E09332C7202F20C5D94EF4DBBA2A33E690798"
+MAX_SERVICE_PATH_CHARS = 220
+_PATH_BUDGET_SESSION_ID = "s-12345678"
+_PATH_BUDGET_SCENARIO_ID = "c360-2-3-12345678"
+_PATH_BUDGET_RUN_ID = "00000000-0000-0000-0000-000000000000"
+_LONGEST_ARTIFACT_NAME = "reference_screening_result.json"
 
 PDH_COUNTERS = {
     "pages_input_per_second": r"\Memory\Pages Input/sec",
@@ -64,6 +70,231 @@ PDH_COUNTERS = {
     "page_reads_per_second": r"\Memory\Page Reads/sec",
     "page_writes_per_second": r"\Memory\Page Writes/sec",
 }
+
+
+class UnsafeStoragePath(RuntimeError):
+    """Raised before a filesystem operation crosses a measured-session boundary."""
+
+
+@dataclass(frozen=True)
+class WorkRootSelection:
+    work_root: Path
+    rejected_root: Path
+    attempts: list[dict[str, Any]]
+    path_budget: dict[str, Any]
+
+
+def _strict_resolve(path: Path) -> Path:
+    return path.resolve(strict=True)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_storage_root(root: Path, repository_root: Path) -> Path:
+    """Return a resolved safe external root or raise before any recursive operation."""
+
+    home = Path.home().resolve(strict=False)
+    if root.resolve(strict=False) == home:
+        raise UnsafeStoragePath("storage root must not be the user home")
+    try:
+        resolved = _strict_resolve(root)
+        repository = _strict_resolve(repository_root)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStoragePath(f"storage root resolve failed: {exc}") from exc
+    # On some managed Windows profiles strict resolution of the home directory itself
+    # is denied even though descendants are usable. The equality guard needs a canonical
+    # absolute spelling, while every destructive root/target still uses strict resolution.
+    drive_root = Path(resolved.anchor)
+    try:
+        drive_root = _strict_resolve(drive_root)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStoragePath(f"drive root resolve failed: {exc}") from exc
+    if resolved == drive_root:
+        raise UnsafeStoragePath("storage root must not be a drive root")
+    if resolved == home:
+        raise UnsafeStoragePath("storage root must not be the user home")
+    if _is_relative_to(resolved, repository) or _is_relative_to(repository, resolved):
+        raise UnsafeStoragePath("storage root and repository paths must be disjoint")
+    return resolved
+
+
+def _strict_descendant(target: Path, root: Path, repository_root: Path) -> tuple[Path, Path]:
+    try:
+        resolved_root = validate_storage_root(root, repository_root)
+        resolved_target = _strict_resolve(target)
+    except UnsafeStoragePath:
+        raise
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStoragePath(f"target resolve failed: {exc}") from exc
+    if resolved_target == resolved_root:
+        raise UnsafeStoragePath("recursive operation may not target the work root itself")
+    if not _is_relative_to(resolved_target, resolved_root):
+        raise UnsafeStoragePath("recursive operation target must be a strict descendant")
+    return resolved_target, resolved_root
+
+
+def safe_rmtree(target: Path, work_root: Path, repository_root: Path) -> None:
+    """Recursively delete only a resolved strict descendant of the selected work root."""
+
+    try:
+        resolved_target, _ = _strict_descendant(target, work_root, repository_root)
+    except UnsafeStoragePath:
+        raise
+    except Exception as exc:
+        raise UnsafeStoragePath(f"path composition/resolve failed: {exc}") from exc
+    shutil.rmtree(resolved_target)
+
+
+def _safe_new_destination(destination: Path, root: Path, repository_root: Path) -> tuple[Path, Path]:
+    resolved_root = validate_storage_root(root, repository_root)
+    if destination.exists():
+        raise UnsafeStoragePath(f"destination already exists: {destination}")
+    try:
+        resolved_parent = _strict_resolve(destination.parent)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeStoragePath(f"destination parent resolve failed: {exc}") from exc
+    if not _is_relative_to(resolved_parent, resolved_root):
+        raise UnsafeStoragePath("move destination must be below the rejected root")
+    candidate = resolved_parent / destination.name
+    if candidate == resolved_root or not _is_relative_to(candidate, resolved_root):
+        raise UnsafeStoragePath("move destination must be a strict descendant")
+    return candidate, resolved_root
+
+
+def safe_move_tree(
+    source: Path,
+    destination: Path,
+    work_root: Path,
+    rejected_root: Path,
+    repository_root: Path,
+) -> Path:
+    """Move one measured tree after validating both component-level boundaries."""
+
+    resolved_source, _ = _strict_descendant(source, work_root, repository_root)
+    resolved_destination, _ = _safe_new_destination(
+        destination, rejected_root, repository_root
+    )
+    shutil.move(str(resolved_source), str(resolved_destination))
+    return _strict_resolve(resolved_destination)
+
+
+def _probe_root(path: Path) -> None:
+    probe = path / f".swlt-probe-{uuid.uuid4().hex}"
+    payload = b"stepwise-load-test-root-probe\n"
+    try:
+        with probe.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if probe.read_bytes() != payload:
+            raise OSError("root probe read-back mismatch")
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _prepare_root_pair(
+    work_root: Path, rejected_root: Path, repository_root: Path
+) -> tuple[Path, Path]:
+    work_root.mkdir(parents=True, exist_ok=True)
+    rejected_root.mkdir(parents=True, exist_ok=True)
+    resolved_work = validate_storage_root(work_root, repository_root)
+    resolved_rejected = validate_storage_root(rejected_root, repository_root)
+    if _is_relative_to(resolved_work, resolved_rejected) or _is_relative_to(
+        resolved_rejected, resolved_work
+    ):
+        raise UnsafeStoragePath("work and rejected roots must be component-level siblings")
+    _probe_root(resolved_work)
+    _probe_root(resolved_rejected)
+    return resolved_work, resolved_rejected
+
+
+def _service_path_budget(data_root: Path) -> dict[str, Any]:
+    candidates = {
+        "run_artifact": data_root
+        / _PATH_BUDGET_RUN_ID
+        / "artifacts"
+        / _LONGEST_ARTIFACT_NAME,
+        "staged_upload": data_root / ".staging" / _PATH_BUDGET_RUN_ID / "walking.txt",
+    }
+    lengths = {name: len(str(path.absolute())) for name, path in candidates.items()}
+    longest_name = max(lengths, key=lengths.__getitem__)
+    return {
+        "limit_chars": MAX_SERVICE_PATH_CHARS,
+        "max_chars": lengths[longest_name],
+        "longest_kind": longest_name,
+        "longest_path": str(candidates[longest_name].absolute()),
+        "candidate_lengths": lengths,
+        "passed": lengths[longest_name] <= MAX_SERVICE_PATH_CHARS,
+    }
+
+
+def _default_root_candidates() -> list[tuple[Path, Path]]:
+    temp_root = Path(os.environ.get("TEMP", tempfile.gettempdir()))
+    if os.name == "nt":
+        return [
+            (Path(r"C:\swlt"), Path(r"C:\swlt-rejected")),
+            (Path.home() / "swlt", Path.home() / "swlt-rejected"),
+            (temp_root / "swlt", temp_root / "swlt-rejected"),
+        ]
+    return [(temp_root / "swlt", temp_root / "swlt-rejected")]
+
+
+def select_work_roots(
+    repository_root: Path,
+    *,
+    candidates: list[tuple[Path, Path]] | None = None,
+) -> WorkRootSelection:
+    attempts: list[dict[str, Any]] = []
+    for work_candidate, rejected_candidate in candidates or _default_root_candidates():
+        attempt: dict[str, Any] = {
+            "work_candidate": str(work_candidate),
+            "rejected_candidate": str(rejected_candidate),
+            "usable": False,
+        }
+        try:
+            work_root, rejected_root = _prepare_root_pair(
+                work_candidate, rejected_candidate, repository_root
+            )
+            data_root = (
+                work_root
+                / _PATH_BUDGET_SESSION_ID
+                / _PATH_BUDGET_SCENARIO_ID
+                / "data"
+            )
+            budget = _service_path_budget(data_root)
+            attempt.update(
+                {
+                    "resolved_work_root": str(work_root),
+                    "resolved_rejected_root": str(rejected_root),
+                    "path_budget": budget,
+                }
+            )
+            if not budget["passed"]:
+                raise UnsafeStoragePath(
+                    f"service path budget {budget['max_chars']} exceeds "
+                    f"{MAX_SERVICE_PATH_CHARS} characters"
+                )
+            attempt["usable"] = True
+            attempts.append(attempt)
+            return WorkRootSelection(
+                work_root=work_root,
+                rejected_root=rejected_root,
+                attempts=attempts,
+                path_budget=budget,
+            )
+        except (OSError, RuntimeError) as exc:
+            attempt["failure"] = f"{type(exc).__name__}: {exc}"
+            attempts.append(attempt)
+    raise UnsafeStoragePath(
+        "no safe writable load-test root pair: "
+        + json.dumps(attempts, ensure_ascii=False, sort_keys=True)
+    )
 
 
 @dataclass(frozen=True)
@@ -468,6 +699,12 @@ class ServiceHandle:
 async def start_service(
     *, data_root: Path, log_path: Path, runner_mode: str = "normal", ttl_hours: float = 24.0
 ) -> ServiceHandle:
+    budget = _service_path_budget(data_root)
+    if not budget["passed"]:
+        raise UnsafeStoragePath(
+            f"service path budget {budget['max_chars']} exceeds "
+            f"{MAX_SERVICE_PATH_CHARS} characters: {budget['longest_path']}"
+        )
     data_root.mkdir(parents=True, exist_ok=False)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("wb")
@@ -1310,6 +1547,9 @@ class RunLogger:
     def close(self) -> None:
         self._handle.close()
 
+    def flush(self) -> None:
+        self._handle.flush()
+
 
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1327,6 +1567,88 @@ def _sha256_path(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _tracebacks_from_logs(paths: list[Path]) -> str:
+    sections: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+        marker = text.find("Traceback")
+        if marker >= 0:
+            sections.append(f"===== {path.name} =====\n{text[marker:].rstrip()}\n")
+    return "\n".join(sections) if sections else "No traceback recorded.\n"
+
+
+def write_rejection_evidence(
+    *,
+    short_id: str,
+    full_label: str,
+    aggregate: dict[str, Any],
+    repository_rejected_root: Path,
+    external_artifact_root: Path,
+    stdout_path: Path,
+    service_log_paths: list[Path],
+) -> dict[str, Any]:
+    """Persist the small, reviewable half of one rejected measurement."""
+
+    evidence_dir = repository_rejected_root / short_id
+    evidence_dir.mkdir(parents=True, exist_ok=False)
+    _atomic_json(evidence_dir / "aggregate.json", aggregate)
+    if stdout_path.is_file():
+        shutil.copy2(stdout_path, evidence_dir / "stdout.log")
+    else:
+        (evidence_dir / "stdout.log").write_text("", encoding="utf-8")
+    combined_logs: list[str] = []
+    for service_log in service_log_paths:
+        if service_log.is_file():
+            combined_logs.append(
+                f"===== {service_log.name} =====\n"
+                + service_log.read_text(encoding="utf-8", errors="replace").rstrip()
+                + "\n"
+            )
+    (evidence_dir / "service.log").write_text(
+        "\n".join(combined_logs) if combined_logs else "No service log recorded.\n",
+        encoding="utf-8",
+    )
+    (evidence_dir / "traceback.txt").write_text(
+        _tracebacks_from_logs(service_log_paths), encoding="utf-8"
+    )
+    file_rows: dict[str, dict[str, Any]] = {}
+    for name in ("aggregate.json", "stdout.log", "service.log", "traceback.txt"):
+        path = evidence_dir / name
+        file_rows[name] = {"bytes": path.stat().st_size, "sha256": _sha256_path(path)}
+    index = {
+        "short_id": short_id,
+        "full_label": full_label,
+        "external_artifact_root": str(external_artifact_root.resolve(strict=True)),
+        "repository_evidence_path": str(evidence_dir.resolve()),
+        "files": file_rows,
+    }
+    _atomic_json(evidence_dir / "index.json", index)
+    return {
+        "repository_evidence_path": str(evidence_dir.resolve()),
+        "external_artifact_root": index["external_artifact_root"],
+    }
+
+
+def _refresh_rejection_stdout(evidence_dirs: list[str], stdout_path: Path) -> None:
+    if not stdout_path.is_file():
+        return
+    for raw_path in evidence_dirs:
+        evidence_dir = Path(raw_path)
+        if not evidence_dir.is_dir():
+            continue
+        shutil.copy2(stdout_path, evidence_dir / "stdout.log")
+        index_path = evidence_dir / "index.json"
+        if not index_path.is_file():
+            continue
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        copied = evidence_dir / "stdout.log"
+        index["files"]["stdout.log"] = {
+            "bytes": copied.stat().st_size,
+            "sha256": _sha256_path(copied),
+        }
+        _atomic_json(index_path, index)
 
 
 def generate_fixture(n_samples: int, path: Path, *, seed: int = 7) -> Path:
@@ -1375,16 +1697,19 @@ async def run_memory_calibration(
     sample_count: int,
     input_path: Path,
     session_dir: Path,
-    work_dir: Path,
+    session_work_root: Path,
+    work_root: Path,
+    repository_root: Path,
     logger: RunLogger,
 ) -> dict[str, Any]:
-    identifier = f"calibration-n{sample_count}-{uuid.uuid4().hex[:8]}"
-    data_root = work_dir / identifier / "data"
+    label = f"calibration-n{sample_count}"
+    identifier = f"c{sample_count // 1000}-cal-{uuid.uuid4().hex[:4]}"
+    data_root = session_work_root / identifier / "data"
     service = await start_service(
         data_root=data_root,
         log_path=session_dir / "service-logs" / f"{identifier}.log",
     )
-    monitor = CalibrationMonitor(service, work_dir)
+    monitor = CalibrationMonitor(service, data_root)
     monitor_task = asyncio.create_task(monitor.run())
     baseline = int(psutil.Process(os.getpid()).memory_info().rss)
     upload_started: float | None = None
@@ -1458,6 +1783,8 @@ async def run_memory_calibration(
         failure = failure or "calibration disk free space fell below 20 GiB"
     result = {
         "sample_count": sample_count,
+        "label": label,
+        "path_id": identifier,
         "input_path": str(input_path),
         "input_bytes": input_path.stat().st_size,
         "run_id": run_id,
@@ -1490,7 +1817,7 @@ async def run_memory_calibration(
         ],
     )
     if result["passed"]:
-        shutil.rmtree(data_root.parent)
+        safe_rmtree(data_root.parent, work_root, repository_root)
     return result
 
 
@@ -1809,15 +2136,16 @@ async def run_repetition(
     target: int,
     input_path: Path,
     session_dir: Path,
-    work_dir: Path,
+    session_work_root: Path,
+    path_id_prefix: str,
     oracle: CorrectnessOracle,
     logger: RunLogger,
 ) -> dict[str, Any]:
-    repetition_id = f"{label}-{uuid.uuid4().hex[:8]}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    data_root = work_dir / repetition_id / "data"
+    repetition_id = f"{path_id_prefix}-{uuid.uuid4().hex[:4]}"
+    session_work_root.mkdir(parents=True, exist_ok=True)
+    data_root = session_work_root / repetition_id / "data"
     log_path = session_dir / "service-logs" / f"{repetition_id}.log"
-    disk_before = int(psutil.disk_usage(str(work_dir)).free)
+    disk_before = int(psutil.disk_usage(str(session_work_root)).free)
     logger.emit(
         "repetition_start",
         label=label,
@@ -1826,7 +2154,7 @@ async def run_repetition(
         disk_free_bytes=disk_before,
     )
     service = await start_service(data_root=data_root, log_path=log_path)
-    monitor = ResourceMonitor(service, work_dir)
+    monitor = ResourceMonitor(service, data_root)
     state = MeasurementState(window_seconds=window_seconds, target=target)
     health: list[HealthObservation] = []
     rejections: list[RejectionObservation] = []
@@ -1858,7 +2186,7 @@ async def run_repetition(
         monitor.stop()
         await monitor_task
         await stop_service(service)
-    disk_after = int(psutil.disk_usage(str(work_dir)).free)
+    disk_after = int(psutil.disk_usage(str(data_root)).free)
     result = _repetition_summary(
         label=label,
         sample_count=sample_count,
@@ -1916,27 +2244,84 @@ def aggregate_point(repetitions: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _archive_or_clean_point(point: dict[str, Any], work_dir: Path, rejected_dir: Path) -> None:
+def _archive_or_clean_result(
+    result: dict[str, Any],
+    *,
+    citable: bool,
+    full_label: str,
+    aggregate: dict[str, Any],
+    work_root: Path,
+    external_rejected_root: Path,
+    repository_rejected_root: Path,
+    repository_root: Path,
+    stdout_path: Path,
+) -> str | None:
+    source = Path(result["service"]["data_root"])
+    if not source.exists():
+        return None
+    tree = source.parent
+    short_id = tree.name
+    if citable:
+        safe_rmtree(tree, work_root, repository_root)
+        result["service"]["data_retained"] = False
+        return None
+    destination = external_rejected_root / short_id
+    retained = safe_move_tree(
+        tree,
+        destination,
+        work_root,
+        external_rejected_root,
+        repository_root,
+    )
+    result["service"]["data_retained"] = True
+    result["service"]["retained_path"] = str(retained)
+    evidence = write_rejection_evidence(
+        short_id=short_id,
+        full_label=full_label,
+        aggregate=aggregate,
+        repository_rejected_root=repository_rejected_root,
+        external_artifact_root=retained,
+        stdout_path=stdout_path,
+        service_log_paths=[Path(result["service"]["log_path"])],
+    )
+    result["service"]["repository_evidence_path"] = evidence[
+        "repository_evidence_path"
+    ]
+    return str(evidence["repository_evidence_path"])
+
+
+def _archive_or_clean_point(
+    point: dict[str, Any],
+    *,
+    work_root: Path,
+    external_rejected_root: Path,
+    repository_rejected_root: Path,
+    repository_root: Path,
+    stdout_path: Path,
+) -> list[str]:
+    evidence_dirs: list[str] = []
     for repetition in point["repetitions"]:
-        source = Path(repetition["service"]["data_root"])
-        if not source.exists():
-            continue
-        if point["citable"]:
-            shutil.rmtree(source.parent)
-            repetition["service"]["data_retained"] = False
-        else:
-            destination = rejected_dir / f"{source.parent.name}-{point['invalid_reasons'][0]}"
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source.parent), destination)
-            repetition["service"]["data_retained"] = True
-            repetition["service"]["retained_path"] = str(destination)
-    _remove_empty_parents(work_dir)
+        evidence = _archive_or_clean_result(
+            repetition,
+            citable=bool(point["citable"]),
+            full_label=str(repetition["label"]),
+            aggregate=point,
+            work_root=work_root,
+            external_rejected_root=external_rejected_root,
+            repository_rejected_root=repository_rejected_root,
+            repository_root=repository_root,
+            stdout_path=stdout_path,
+        )
+        if evidence is not None:
+            evidence_dirs.append(evidence)
+    return evidence_dirs
 
 
-def _remove_empty_parents(root: Path) -> None:
+def _remove_empty_parents(root: Path, work_root: Path, repository_root: Path) -> None:
     if not root.exists():
         return
-    for path in sorted(root.rglob("*"), reverse=True):
+    resolved_root, _ = _strict_descendant(root, work_root, repository_root)
+    for path in sorted(resolved_root.rglob("*"), reverse=True):
         if path.is_dir():
             try:
                 path.rmdir()
@@ -1959,11 +2344,11 @@ async def _wait_terminal(client: httpx.AsyncClient, run_id: str, timeout: float)
 
 
 async def run_timeout_fault(
-    input_path: Path, session_dir: Path, work_dir: Path, logger: RunLogger
+    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
 ) -> dict[str, Any]:
-    identifier = f"timeout-{uuid.uuid4().hex[:8]}"
+    identifier = f"f-time-{uuid.uuid4().hex[:4]}"
     service = await start_service(
-        data_root=work_dir / identifier / "data",
+        data_root=session_work_root / identifier / "data",
         log_path=session_dir / "service-logs" / f"{identifier}.log",
         runner_mode="slow",
     )
@@ -2018,11 +2403,11 @@ async def run_timeout_fault(
 
 
 async def run_ttl_fault(
-    input_path: Path, session_dir: Path, work_dir: Path, logger: RunLogger
+    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
 ) -> dict[str, Any]:
-    identifier = f"ttl-{uuid.uuid4().hex[:8]}"
+    identifier = f"f-ttl-{uuid.uuid4().hex[:4]}"
     service = await start_service(
-        data_root=work_dir / identifier / "data",
+        data_root=session_work_root / identifier / "data",
         log_path=session_dir / "service-logs" / f"{identifier}.log",
         runner_mode="ttl",
         ttl_hours=0.001,
@@ -2077,11 +2462,11 @@ async def run_ttl_fault(
 
 
 async def run_contract_faults(
-    input_path: Path, session_dir: Path, work_dir: Path, logger: RunLogger
+    input_path: Path, session_dir: Path, session_work_root: Path, logger: RunLogger
 ) -> dict[str, Any]:
-    identifier = f"contract-{uuid.uuid4().hex[:8]}"
+    identifier = f"f-http-{uuid.uuid4().hex[:4]}"
     service = await start_service(
-        data_root=work_dir / identifier / "data",
+        data_root=session_work_root / identifier / "data",
         log_path=session_dir / "service-logs" / f"{identifier}.log",
     )
     try:
@@ -2122,6 +2507,23 @@ async def run_contract_faults(
     return result
 
 
+def _format_latency_summary(stats: dict[str, Any]) -> str:
+    if "end_to_end_raw_seconds" in stats:
+        raw = stats["end_to_end_raw_seconds"]
+        return (
+            f"raw={json.dumps(raw, separators=(',', ':'))}; "
+            f"median={stats['end_to_end_median_seconds']}; n={stats['n']}"
+        )
+    if stats.get("n", 0) == 0:
+        return "n=0"
+    if stats.get("quantile") == "p95":
+        return f"n={stats['n']}; p50={stats['p50']}; p95={stats['p95']}"
+    return (
+        f"n={stats['n']}; p50={stats['p50']}; p90={stats['p90']}; "
+        f"max={stats['max']}"
+    )
+
+
 def _report_markdown(results: dict[str, Any]) -> str:
     lines = [
         "# StepWise Concurrent Load Test",
@@ -2137,6 +2539,23 @@ def _report_markdown(results: dict[str, Any]) -> str:
         f"Preflight passed: **{results['preflight']['passed']}**",
         "",
     ]
+    storage = results.get("storage", {})
+    if storage.get("work_root"):
+        lines.extend(
+            [
+                f"- Actual work root: `{storage['work_root']}`",
+                f"- Actual rejected root: `{storage['rejected_root']}`",
+                f"- Session work root: `{storage['session_work_root']}`",
+                (
+                    f"- Path budget: `{storage['path_budget']['max_chars']}` / "
+                    f"`{storage['path_budget']['limit_chars']}` characters"
+                ),
+                f"- Root selection attempts: `{json.dumps(storage['selection_attempts'], ensure_ascii=False, sort_keys=True)}`",
+                "",
+            ]
+        )
+    elif storage.get("selection_failure"):
+        lines.extend([f"- Work-root selection failure: `{storage['selection_failure']}`", ""])
     if not results["preflight"]["passed"]:
         lines.extend(
             [
@@ -2205,6 +2624,52 @@ def _report_markdown(results: dict[str, Any]) -> str:
             f"{point['throughput_spread_percent']:.3f}% | {point['citable']} | "
             f"{point['latency_quantile_summary']} |"
         )
+    lines.extend(["", "## Repetition details", ""])
+    for point in results.get("points", []):
+        lines.extend(
+            [
+                f"### {point['sample_count']} samples, C={point['concurrency']}",
+                "",
+                "| repetition | service PID | n | throughput jobs/min | end-to-end | queue | compute | 429 count | 429 latency | effective C | available min bytes | pagefile growth bytes | generator CPU p50/p95/max | citable |",
+                "|---|---:|---:|---:|---|---|---|---:|---|---:|---:|---:|---|---|",
+            ]
+        )
+        for repetition in point["repetitions"]:
+            formal = repetition["formal"]
+            if "end_to_end_raw_seconds" in formal:
+                end_to_end = _format_latency_summary(formal)
+                queue = (
+                    f"raw={json.dumps(formal['queue_raw_seconds'], separators=(',', ':'))}; "
+                    f"missing={formal['split_missing_n']}"
+                )
+                compute = (
+                    f"raw={json.dumps(formal['compute_raw_seconds'], separators=(',', ':'))}; "
+                    f"missing={formal['split_missing_n']}"
+                )
+            else:
+                end_to_end = _format_latency_summary(formal["end_to_end_seconds"])
+                queue = _format_latency_summary(formal["queue_seconds"])
+                compute = _format_latency_summary(formal["compute_seconds"])
+            rejected = repetition["rejections_429"]
+            resources = repetition["resources"]
+            pagefile_growth = (
+                int(resources.get("pagefile_used_max_bytes", 0))
+                - int(resources.get("pagefile_used_start_bytes", 0))
+            )
+            generator_cpu = resources.get("generator_cpu", {})
+            generator_cpu_text = (
+                f"{generator_cpu.get('p50')}/{generator_cpu.get('p95')}/"
+                f"{generator_cpu.get('max')}"
+            )
+            lines.append(
+                f"| {repetition['label']} | {repetition['service']['pid']} | "
+                f"{formal['n']} | {repetition['throughput_jobs_per_minute']:.6g} | "
+                f"{end_to_end} | {queue} | {compute} | {rejected['count']} | "
+                f"{_format_latency_summary(rejected['latency_seconds'])} | "
+                f"{repetition['average_effective_concurrency']} | "
+                f"{resources.get('available_memory_min_bytes')} | {pagefile_growth} | "
+                f"{generator_cpu_text} | {repetition['citable']} |"
+            )
     lines.extend(
         [
             "",
@@ -2214,9 +2679,19 @@ def _report_markdown(results: dict[str, Any]) -> str:
             "",
             f"Suite stopped for mismatch: **{results.get('correctness_mismatch') is not None}**",
             "",
+            f"Correctness summaries: `{json.dumps(results.get('correctness', {}), ensure_ascii=False, sort_keys=True)}`",
+            "",
             "## Fault tests and A2",
             "",
-            "See `raw-results.json` for the contract, timeout isolation, TTL race, optional fallback burst, and final A2 drift records.",
+            f"Contract faults: `{json.dumps(results.get('contract_faults'), ensure_ascii=False, sort_keys=True)}`",
+            "",
+            f"Timeout isolation: `{json.dumps(results.get('timeout_fault'), ensure_ascii=False, sort_keys=True)}`",
+            "",
+            f"TTL race: `{json.dumps(results.get('ttl_fault'), ensure_ascii=False, sort_keys=True)}`",
+            "",
+            f"A2: `{json.dumps(results.get('a2'), ensure_ascii=False, sort_keys=True)}`",
+            "",
+            f"Drift: `{json.dumps(results.get('drift'), ensure_ascii=False, sort_keys=True)}`",
             "",
             "## Limitations",
             "",
@@ -2232,10 +2707,7 @@ def _report_markdown(results: dict[str, Any]) -> str:
 
 async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
     repository_root = Path(__file__).resolve().parents[1]
-    work_dir = repository_root / "bench-data" / "loadtest-work"
-    rejected_dir = repository_root / "bench-data" / "rejected"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    preflight = preflight_snapshot(work_dir)
+    repository_rejected_root = repository_root / "bench-data" / "rejected"
     source_commit_result = await asyncio.to_thread(
         subprocess.run,
         ["git", "rev-parse", "HEAD"],
@@ -2245,12 +2717,50 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
         text=True,
     )
     source_commit = source_commit_result.stdout.strip()
+    try:
+        storage = select_work_roots(repository_root)
+    except UnsafeStoragePath as exc:
+        preflight = preflight_snapshot(repository_root)
+        preflight["passed"] = False
+        preflight["failures"].append("work_root_selection_failed")
+        failure_results: dict[str, Any] = {
+            "schema_version": 1,
+            "session_id": output_dir.name,
+            "source_commit": source_commit,
+            "attachment_original_sha256": SOURCE_ATTACHMENT_SHA256,
+            "preflight": preflight,
+            "storage": {"selection_failure": str(exc)},
+            "points": [],
+            "stopped_reason": "work_root_selection_failed",
+        }
+        _atomic_json(output_dir / "raw-results.json", failure_results)
+        logger.emit("work_root_selection_failed", error=str(exc))
+        return failure_results
+    session_short_id = f"s-{uuid.uuid4().hex[:8]}"
+    session_work_root = storage.work_root / session_short_id
+    session_work_root.mkdir(parents=False, exist_ok=False)
+    _strict_descendant(session_work_root, storage.work_root, repository_root)
+    preflight = preflight_snapshot(session_work_root)
+    logger.emit(
+        "storage_root_selected",
+        work_root=str(storage.work_root),
+        rejected_root=str(storage.rejected_root),
+        session_work_root=str(session_work_root),
+        path_budget=storage.path_budget,
+    )
     results: dict[str, Any] = {
         "schema_version": 1,
         "session_id": output_dir.name,
         "source_commit": source_commit,
         "attachment_original_sha256": SOURCE_ATTACHMENT_SHA256,
         "preflight": preflight,
+        "storage": {
+            "work_root": str(storage.work_root),
+            "rejected_root": str(storage.rejected_root),
+            "session_work_root": str(session_work_root),
+            "selection_attempts": storage.attempts,
+            "path_budget": storage.path_budget,
+        },
         "configuration": {
             "max_workers": 2,
             "max_queue": 8,
@@ -2261,6 +2771,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             "retry_429_seconds": RETRY_429_SECONDS,
         },
         "points": [],
+        "rejection_evidence_dirs": [],
     }
     _atomic_json(output_dir / "raw-results.json", results)
     if not preflight["passed"]:
@@ -2271,7 +2782,9 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
     inputs: dict[int, Path] = {}
     input_metadata: dict[str, Any] = {}
     for sample_count in (30_000, 360_000):
-        path = generate_fixture(sample_count, work_dir / "inputs" / f"walk-{sample_count}.txt")
+        path = generate_fixture(
+            sample_count, session_work_root / "inputs" / f"walk-{sample_count}.txt"
+        )
         if path.stat().st_size > 64 * MiB:
             raise RuntimeError(
                 f"generated {sample_count}-sample fixture exceeds configured upload limit"
@@ -2289,13 +2802,28 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             sample_count=sample_count,
             input_path=inputs[sample_count],
             session_dir=output_dir,
-            work_dir=work_dir,
+            session_work_root=session_work_root,
+            work_root=storage.work_root,
+            repository_root=repository_root,
             logger=logger,
         )
         calibrations[str(sample_count)] = calibration
         results["memory_calibrations"] = calibrations
         _atomic_json(output_dir / "raw-results.json", results)
         if not calibration["passed"]:
+            evidence = _archive_or_clean_result(
+                calibration,
+                citable=False,
+                full_label=str(calibration["label"]),
+                aggregate=calibration,
+                work_root=storage.work_root,
+                external_rejected_root=storage.rejected_root,
+                repository_rejected_root=repository_rejected_root,
+                repository_root=repository_root,
+                stdout_path=logger.path,
+            )
+            if evidence is not None:
+                results["rejection_evidence_dirs"].append(evidence)
             results["stopped_reason"] = f"memory_calibration_failed_{sample_count}"
             _atomic_json(output_dir / "raw-results.json", results)
             return results
@@ -2340,7 +2868,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
 
     oracles = {
         sample_count: CorrectnessOracle(
-            rejected_dir / f"{output_dir.name}-correctness-{sample_count}",
+            repository_rejected_root / f"{output_dir.name}-correctness-{sample_count}",
             input_metadata[str(sample_count)]["sha256"],
         )
         for sample_count in inputs
@@ -2364,7 +2892,10 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 target=TARGET_COMPLETIONS,
                 input_path=inputs[sample_count],
                 session_dir=output_dir,
-                work_dir=work_dir,
+                session_work_root=session_work_root,
+                path_id_prefix=(
+                    f"c{sample_count // 1000}-{concurrency}-{repetition_number}"
+                ),
                 oracle=oracles[sample_count],
                 logger=logger,
             )
@@ -2383,25 +2914,58 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 if "suite-aborted" not in aborted_point["invalid_reasons"]:
                     aborted_point["invalid_reasons"].append("suite-aborted")
                 aborted_point["citable"] = False
-                _archive_or_clean_point(aborted_point, work_dir, rejected_dir)
+                results["rejection_evidence_dirs"].extend(
+                    _archive_or_clean_point(
+                        aborted_point,
+                        work_root=storage.work_root,
+                        external_rejected_root=storage.rejected_root,
+                        repository_rejected_root=repository_rejected_root,
+                        repository_root=repository_root,
+                        stdout_path=logger.path,
+                    )
+                )
                 results["points"].append(aborted_point)
                 _atomic_json(output_dir / "raw-results.json", results)
                 return results
         point = aggregate_point(repetitions)
-        _archive_or_clean_point(point, work_dir, rejected_dir)
+        results["rejection_evidence_dirs"].extend(
+            _archive_or_clean_point(
+                point,
+                work_root=storage.work_root,
+                external_rejected_root=storage.rejected_root,
+                repository_rejected_root=repository_rejected_root,
+                repository_root=repository_root,
+                stdout_path=logger.path,
+            )
+        )
         results["points"].append(point)
         _atomic_json(output_dir / "raw-results.json", results)
 
     if decision["run_30k"]:
         results["contract_faults"] = await run_contract_faults(
-            inputs[30_000], output_dir, work_dir, logger
+            inputs[30_000], output_dir, session_work_root, logger
         )
         results["timeout_fault"] = await run_timeout_fault(
-            inputs[30_000], output_dir, work_dir, logger
+            inputs[30_000], output_dir, session_work_root, logger
         )
         results["ttl_fault"] = await run_ttl_fault(
-            inputs[30_000], output_dir, work_dir, logger
+            inputs[30_000], output_dir, session_work_root, logger
         )
+        for key in ("contract_faults", "timeout_fault", "ttl_fault"):
+            fault = results[key]
+            evidence = _archive_or_clean_result(
+                fault,
+                citable=bool(fault["passed"]),
+                full_label=key,
+                aggregate=fault,
+                work_root=storage.work_root,
+                external_rejected_root=storage.rejected_root,
+                repository_rejected_root=repository_rejected_root,
+                repository_root=repository_root,
+                stdout_path=logger.path,
+            )
+            if evidence is not None:
+                results["rejection_evidence_dirs"].append(evidence)
         if not matrix_had_429:
             burst = await run_repetition(
                 label="fallback-429-burst",
@@ -2411,12 +2975,33 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
                 target=10_000,
                 input_path=inputs[30_000],
                 session_dir=output_dir,
-                work_dir=work_dir,
+                session_work_root=session_work_root,
+                path_id_prefix="b429",
                 oracle=oracles[30_000],
                 logger=logger,
             )
             results["fallback_429_burst"] = burst
             results["fallback_burst_excluded_from_throughput_table"] = True
+            burst_point = aggregate_point([burst])
+            if burst["abort_suite"]:
+                burst_point["invalid_reasons"].append("suite-aborted")
+                burst_point["citable"] = False
+            results["rejection_evidence_dirs"].extend(
+                _archive_or_clean_point(
+                    burst_point,
+                    work_root=storage.work_root,
+                    external_rejected_root=storage.rejected_root,
+                    repository_rejected_root=repository_rejected_root,
+                    repository_root=repository_root,
+                    stdout_path=logger.path,
+                )
+            )
+            if burst["abort_suite"]:
+                results["correctness_mismatch"] = oracles[30_000].mismatch
+                results["aborted_at"] = "fallback-429-burst"
+                results["abort_reason"] = "correctness-mismatch"
+                _atomic_json(output_dir / "raw-results.json", results)
+                return results
 
         a2 = await run_repetition(
             label="a2-n30000-c1",
@@ -2426,10 +3011,31 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             target=TARGET_COMPLETIONS,
             input_path=inputs[30_000],
             session_dir=output_dir,
-            work_dir=work_dir,
+            session_work_root=session_work_root,
+            path_id_prefix="a2-30-1",
             oracle=oracles[30_000],
             logger=logger,
         )
+        a2_point = aggregate_point([a2])
+        if a2["abort_suite"]:
+            a2_point["invalid_reasons"].append("suite-aborted")
+            a2_point["citable"] = False
+        results["rejection_evidence_dirs"].extend(
+            _archive_or_clean_point(
+                a2_point,
+                work_root=storage.work_root,
+                external_rejected_root=storage.rejected_root,
+                repository_rejected_root=repository_rejected_root,
+                repository_root=repository_root,
+                stdout_path=logger.path,
+            )
+        )
+        if a2["abort_suite"]:
+            results["correctness_mismatch"] = oracles[30_000].mismatch
+            results["aborted_at"] = "a2-n30000-c1"
+            results["abort_reason"] = "correctness-mismatch"
+            _atomic_json(output_dir / "raw-results.json", results)
+            return results
         a1 = next(
             point
             for point in results["points"]
@@ -2454,6 +3060,7 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
     results["correctness"] = {str(key): oracle.summary() for key, oracle in oracles.items()}
     results["completed_at"] = datetime.now(UTC).isoformat()
     _atomic_json(output_dir / "raw-results.json", results)
+    safe_rmtree(session_work_root, storage.work_root, repository_root)
     return results
 
 
@@ -2496,6 +3103,11 @@ def main(argv: list[str] | None = None) -> int:
             "suite_end",
             completed=bool(results.get("completed_at")),
             output_dir=str(output_dir),
+        )
+        logger.flush()
+        _refresh_rejection_stdout(
+            [str(path) for path in results.get("rejection_evidence_dirs", [])],
+            logger.path,
         )
         if not results["preflight"]["passed"]:
             return 3

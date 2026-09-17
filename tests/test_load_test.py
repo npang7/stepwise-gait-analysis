@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import psutil
 import pytest
@@ -14,6 +15,8 @@ from bench.load_test import (
     GiB,
     MiB,
     ResourceSample,
+    UnsafeStoragePath,
+    _service_path_budget,
     calibration_threshold,
     classify_resource_gate,
     compare_drift,
@@ -24,10 +27,15 @@ from bench.load_test import (
     latency_statistics,
     memory_inventory,
     read_available_memory_samples,
+    safe_move_tree,
+    safe_rmtree,
+    select_work_roots,
     stable_result_digest,
     start_service,
     stop_service,
     summarize_repetition_quantiles,
+    validate_storage_root,
+    write_rejection_evidence,
 )
 
 
@@ -282,3 +290,162 @@ def test_each_repetition_uses_a_fresh_service_process(tmp_path: Path) -> None:
 
     first, second = asyncio.run(exercise())
     assert first != second
+
+
+def test_safe_rmtree_uses_path_components_not_sibling_prefix(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    work_root = tmp_path / "swlt"
+    sibling = tmp_path / "swlt-rejected"
+    target = work_root / "session" / "scenario"
+    repository.mkdir()
+    target.mkdir(parents=True)
+    sibling.mkdir()
+
+    with patch("bench.load_test.shutil.rmtree") as remove:
+        safe_rmtree(target, work_root, repository)
+        remove.assert_called_once_with(target.resolve())
+
+        with pytest.raises(UnsafeStoragePath, match="strict descendant"):
+            safe_rmtree(sibling, work_root, repository)
+        assert remove.call_count == 1
+
+
+def test_safe_rmtree_rejects_root_home_repository_and_resolution_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    work_root = tmp_path / "swlt"
+    target = work_root / "target"
+    repository.mkdir()
+    target.mkdir(parents=True)
+
+    with patch("bench.load_test.shutil.rmtree") as remove:
+        with pytest.raises(UnsafeStoragePath, match="work root itself"):
+            safe_rmtree(work_root, work_root, repository)
+        with pytest.raises(UnsafeStoragePath, match="repository"):
+            validate_storage_root(repository, repository)
+        with pytest.raises(UnsafeStoragePath, match="home"):
+            validate_storage_root(Path.home(), repository)
+        with pytest.raises(UnsafeStoragePath, match="drive root"):
+            validate_storage_root(Path(Path.cwd().anchor), repository)
+
+        def fail_resolve(_path: Path) -> Path:
+            raise OSError("simulated path composition/resolve failure")
+
+        monkeypatch.setattr("bench.load_test._strict_resolve", fail_resolve)
+        with pytest.raises(UnsafeStoragePath, match="resolve"):
+            safe_rmtree(target, work_root, repository)
+        remove.assert_not_called()
+
+
+def test_safe_rmtree_rejects_resolved_junction_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    work_root = tmp_path / "swlt"
+    target = work_root / "junction" / "scenario"
+    outside = tmp_path / "outside" / "scenario"
+    repository.mkdir()
+    target.mkdir(parents=True)
+    outside.mkdir(parents=True)
+    real_resolve = Path.resolve
+
+    def junction_resolve(path: Path) -> Path:
+        if path == target:
+            return real_resolve(outside, strict=True)
+        return real_resolve(path, strict=True)
+
+    monkeypatch.setattr("bench.load_test._strict_resolve", junction_resolve)
+    with patch("bench.load_test.shutil.rmtree") as remove:
+        with pytest.raises(UnsafeStoragePath, match="strict descendant"):
+            safe_rmtree(target, work_root, repository)
+        remove.assert_not_called()
+
+
+def test_safe_move_tree_checks_both_component_boundaries(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    work_root = tmp_path / "swlt"
+    rejected_root = tmp_path / "swlt-rejected"
+    source = work_root / "session" / "scenario"
+    destination = rejected_root / "scenario"
+    repository.mkdir()
+    source.mkdir(parents=True)
+    rejected_root.mkdir()
+
+    moved = safe_move_tree(source, destination, work_root, rejected_root, repository)
+    assert moved == destination.resolve()
+    assert moved.is_dir()
+    assert not source.exists()
+
+    bad_source = rejected_root / "sibling-source"
+    bad_source.mkdir()
+    with pytest.raises(UnsafeStoragePath, match="strict descendant"):
+        safe_move_tree(bad_source, rejected_root / "other", work_root, rejected_root, repository)
+
+
+def test_work_root_selection_falls_back_and_recomputes_path_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    first = (tmp_path / "blocked" / "swlt", tmp_path / "blocked" / "swlt-rejected")
+    second = (tmp_path / "available" / "swlt", tmp_path / "available" / "swlt-rejected")
+    module = __import__("bench.load_test", fromlist=["_prepare_root_pair"])
+    real_probe = module._prepare_root_pair
+
+    def probe(work: Path, rejected: Path, repo: Path) -> tuple[Path, Path]:
+        if work == first[0]:
+            raise PermissionError("simulated permission denial")
+        return real_probe(work, rejected, repo)
+
+    monkeypatch.setattr("bench.load_test._prepare_root_pair", probe)
+    selection = select_work_roots(repository, candidates=[first, second])
+
+    assert selection.work_root == second[0].resolve()
+    assert selection.rejected_root == second[1].resolve()
+    assert selection.attempts[0]["usable"] is False
+    assert selection.attempts[1]["usable"] is True
+    assert selection.path_budget["max_chars"] == _service_path_budget(
+        selection.work_root / "s-12345678" / "c360-2-3-12345678" / "data"
+    )["max_chars"]
+
+
+def test_work_root_selection_keeps_220_character_limit(tmp_path: Path) -> None:
+    short = _service_path_budget(tmp_path / "swlt" / "s-12345678" / "c30-1-1-a1b2" / "data")
+    long = _service_path_budget(
+        tmp_path / ("x" * 120) / "swlt" / "s-12345678" / "c30-1-1-a1b2" / "data"
+    )
+    assert short["limit_chars"] == 220
+    assert long["limit_chars"] == 220
+    assert long["max_chars"] > short["max_chars"]
+
+
+def test_rejection_evidence_keeps_small_files_and_external_index(tmp_path: Path) -> None:
+    repository_rejected = tmp_path / "repository" / "bench-data" / "rejected"
+    stdout = tmp_path / "stdout.log"
+    service_log = tmp_path / "service.log"
+    external = tmp_path / "swlt-rejected" / "c30-20-1-a1b2"
+    stdout.write_text("complete harness output\n", encoding="utf-8")
+    service_log.write_text("prefix\nTraceback (most recent call last):\nboom\n", encoding="utf-8")
+    external.mkdir(parents=True)
+
+    evidence = write_rejection_evidence(
+        short_id="c30-20-1-a1b2",
+        full_label="n30000-c20-r1",
+        aggregate={"citable": False, "invalid_reasons": ["memory-pressure"]},
+        repository_rejected_root=repository_rejected,
+        external_artifact_root=external,
+        stdout_path=stdout,
+        service_log_paths=[service_log],
+    )
+
+    evidence_path = Path(evidence["repository_evidence_path"])
+    index = json.loads((evidence_path / "index.json").read_text(encoding="utf-8"))
+    assert (evidence_path / "aggregate.json").is_file()
+    assert (evidence_path / "stdout.log").read_text(encoding="utf-8") == stdout.read_text(
+        encoding="utf-8"
+    )
+    assert "Traceback" in (evidence_path / "traceback.txt").read_text(encoding="utf-8")
+    assert index["external_artifact_root"] == str(external.resolve())
+    assert index["files"]["aggregate.json"]["sha256"]
+    assert index["files"]["stdout.log"]["sha256"]
