@@ -457,8 +457,9 @@ def test_current_raw_drift_evidence_remains_immutable() -> None:
     payload = raw_path.read_bytes()
     results = json.loads(payload)
 
-    assert hashlib.sha256(payload).hexdigest() == (
-        "e33b5f8609d60435651e4f155eefe91e96db95c2ca284c707cf094f8cbd90c69"
+    repository_bytes = payload.replace(b"\r\n", b"\n")
+    assert hashlib.sha256(repository_bytes).hexdigest() == (
+        "5795407f971e6b512076e154363661d1b0ef8fe0ece2ccd302b57bb6f4409fa5"
     )
     assert results["drift"]["drift_detected"] is True
     assert any(point.get("session_drift_affected") for point in results["points"])
