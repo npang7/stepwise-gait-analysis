@@ -38,3 +38,4 @@ miniapp_test_result*.html
 bench-data/walk_*.txt
 bench-data/artifacts_*/
 bench-data/compare/
+bench-data/loadtest-work/

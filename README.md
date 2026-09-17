@@ -161,6 +161,13 @@ to disable it. The command writes aggregate evidence to `bench-data/baseline-*.j
 warm-up-aware median rows to `BENCHMARKS.md`, and records comparison stdout under `bench-data/`.
 Reproduce it from a clean `pip install -e ".[dev]"` environment without overriding dependencies.
 
+Run the concurrent HTTP suite with `python -m bench.load_test`. It records the environment,
+then derives separate 30k and 360k memory gates from two single-job calibrations; use
+`python -m bench.load_test --preflight-only` to record only the environment snapshot. The complete
+method, invalidation rules, matrix, and fault scenarios are in
+`docs/LOAD_TEST_BRIEF.md`. Session output is written under `bench-data/loadtest-<timestamp>/`;
+large disposable service roots remain under the ignored `bench-data/loadtest-work/`.
+
 Coverage must remain at least 80%. Tests include parsing and timestamp errors, smoothing, hysteresis and feature regression, quality/conflict rules, strict JSON, atomic manifest recovery, TTL cleanup, artifact traversal, queue capacity, worker crash, hard timeout, HTTP status contracts, CLI exit codes, and a real multipart-to-artifact worker run.
 
 GitHub Actions runs the Python gates on 3.11 and 3.12, runs the Mini Program tests, builds the Docker image, and starts a real container. The container gate covers health, upload, polling, result, and artifact download. A workflow file existing locally does not prove that remote CI has run.
