@@ -21,6 +21,11 @@ LOGGER = logging.getLogger("stepwise.jobs")
 Runner = Callable[[str, str, dict[str, Any]], dict[str, Any]]
 TerminalOutcome = tuple[Literal["succeeded", "failed"], dict[str, Any]]
 
+SUPERVISOR_UNAVAILABLE_CODE = "job_supervisor_unavailable"
+SUPERVISOR_UNAVAILABLE_MESSAGE = "The job supervisor is unavailable."
+TERMINAL_PERSISTENCE_SATURATED_CODE = "terminal_persistence_saturated"
+TERMINAL_PERSISTENCE_SATURATED_MESSAGE = "Terminal result persistence is saturated."
+
 _REPOSITORY_RETRY_BASE_SECONDS = 0.1
 _REPOSITORY_RETRY_MAX_SECONDS = 2.0
 _SHUTDOWN_RETRY_TIMEOUT_SECONDS = 2.0
@@ -39,6 +44,30 @@ class SubmissionError(ValueError):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True)
+class ServiceAvailability:
+    available: bool
+    error_code: str | None
+    error_message: str | None
+    pending_count: int
+    oldest_wait_seconds: float | None
+
+    @property
+    def terminal_persistence(self) -> dict[str, int | float | None]:
+        return {
+            "pending_count": self.pending_count,
+            "oldest_wait_seconds": self.oldest_wait_seconds,
+        }
+
+
+class ServiceUnavailableError(RuntimeError):
+    def __init__(self, availability: ServiceAvailability) -> None:
+        if availability.available or availability.error_code is None:
+            raise ValueError("service-unavailable error requires an unavailable snapshot")
+        super().__init__(availability.error_code)
+        self.availability = availability
 
 
 def _config_from_dict(payload: dict[str, Any]) -> AnalysisConfig:
@@ -90,9 +119,15 @@ class _ActiveJob:
     process: Any
     result_queue: Any
     started_at: float
-    # Once captured, this exact payload remains in the active slot until its manifest is durable.
-    terminal_outcome: TerminalOutcome | None = None
     result_queue_closed: bool = False
+    shutdown_capture_failures: int = 0
+    next_shutdown_capture_attempt_at: float = 0.0
+
+
+@dataclass
+class _PendingTerminal:
+    terminal_outcome: TerminalOutcome
+    captured_at: float
     persistence_failures: int = 0
     next_persistence_attempt_at: float = 0.0
 
@@ -123,6 +158,7 @@ class JobManager:
             raise ValueError("worker, queue, and timeout limits must be positive")
         self.repository = JobRepository(data_dir)
         self.max_workers = max_workers
+        self.terminal_capacity = max_workers + max_queue
         self.timeout_seconds = timeout_seconds
         self.max_upload_bytes = max_upload_bytes
         self.result_ttl_hours = result_ttl_hours
@@ -132,6 +168,8 @@ class JobManager:
         self._start_failures = 0
         self._next_start_attempt_at = 0.0
         self._active: dict[str, _ActiveJob] = {}
+        self._terminal_pending: dict[str, _PendingTerminal] = {}
+        self._persistence_saturated = False
         self._lock = threading.RLock()
         self._submission_lock = threading.Lock()
         self._stop = threading.Event()
@@ -155,11 +193,41 @@ class JobManager:
     def supervisor_available(self) -> bool:
         """Return whether the in-process background supervisor loop is available."""
 
-        return (
-            not self._stop.is_set()
-            and not self._supervisor_failed.is_set()
-            and self._thread.is_alive()
-        )
+        return self.availability_snapshot().available
+
+    def availability_snapshot(self) -> ServiceAvailability:
+        now = time.monotonic()
+        with self._lock:
+            pending_count = len(self._terminal_pending)
+            oldest = min(
+                (item.captured_at for item in self._terminal_pending.values()),
+                default=None,
+            )
+            saturated = len(self._active) + pending_count >= self.terminal_capacity
+        oldest_wait = None if oldest is None else max(0.0, now - oldest)
+        if self._stop.is_set() or self._supervisor_failed.is_set() or not self._thread.is_alive():
+            return ServiceAvailability(
+                False,
+                SUPERVISOR_UNAVAILABLE_CODE,
+                SUPERVISOR_UNAVAILABLE_MESSAGE,
+                pending_count,
+                oldest_wait,
+            )
+        if saturated:
+            return ServiceAvailability(
+                False,
+                TERMINAL_PERSISTENCE_SATURATED_CODE,
+                TERMINAL_PERSISTENCE_SATURATED_MESSAGE,
+                pending_count,
+                oldest_wait,
+            )
+        return ServiceAvailability(True, None, None, pending_count, oldest_wait)
+
+    def _require_available(self) -> ServiceAvailability:
+        availability = self.availability_snapshot()
+        if not availability.available:
+            raise ServiceUnavailableError(availability)
+        return availability
 
     def _validate_upload(self, path: Path) -> None:
         if path.stat().st_size > self.max_upload_bytes:
@@ -178,10 +246,12 @@ class JobManager:
         standing: Path | None,
         config: AnalysisConfig,
     ) -> JobManifest:
+        self._require_available()
         self._validate_upload(walking)
         if standing is not None:
             self._validate_upload(standing)
         with self._submission_lock:
+            self._require_available()
             self.repository.cleanup_expired(self.result_ttl_hours)
             manifest = self.repository.create()
             try:
@@ -218,7 +288,7 @@ class JobManager:
     def _start_pending(self) -> None:
         while not self._stop.is_set():
             with self._lock:
-                if len(self._active) >= self.max_workers:
+                if not self._can_start_worker_locked():
                     return
             if time.monotonic() < self._next_start_attempt_at:
                 return
@@ -229,7 +299,7 @@ class JobManager:
                 if self._stop.is_set():
                     return
                 with self._lock:
-                    if len(self._active) >= self.max_workers:
+                    if not self._can_start_worker_locked():
                         return
                 try:
                     run_id, config_payload = self._pending.get_nowait()
@@ -282,6 +352,7 @@ class JobManager:
                                 result_queue=result_queue,
                                 started_at=time.monotonic(),
                             )
+                            self._refresh_persistence_saturation_locked()
                         self._pending.task_done()
                         raise
                     if result_queue is not None:
@@ -312,9 +383,40 @@ class JobManager:
                         result_queue=result_queue,
                         started_at=time.monotonic(),
                     )
+                    self._refresh_persistence_saturation_locked()
                 self._start_failures = 0
                 self._next_start_attempt_at = 0.0
                 self._pending.task_done()
+
+    def _can_start_worker_locked(self) -> bool:
+        return (
+            len(self._active) < self.max_workers
+            and len(self._active) + len(self._terminal_pending) < self.terminal_capacity
+        )
+
+    def _refresh_persistence_saturation_locked(self) -> None:
+        saturated = len(self._active) + len(self._terminal_pending) >= self.terminal_capacity
+        if saturated == self._persistence_saturated:
+            return
+        self._persistence_saturated = saturated
+        if saturated:
+            LOGGER.error(
+                "terminal_persistence_backlog_saturated",
+                extra={
+                    "active_jobs": len(self._active),
+                    "pending_terminal_jobs": len(self._terminal_pending),
+                    "capacity": self.terminal_capacity,
+                },
+            )
+        else:
+            LOGGER.info(
+                "terminal_persistence_backlog_recovered",
+                extra={
+                    "active_jobs": len(self._active),
+                    "pending_terminal_jobs": len(self._terminal_pending),
+                    "capacity": self.terminal_capacity,
+                },
+            )
 
     @staticmethod
     def _stop_process(active: _ActiveJob) -> None:
@@ -333,23 +435,19 @@ class JobManager:
             _REPOSITORY_RETRY_MAX_SECONDS,
         )
 
-    def _capture_terminal_outcome(self, active: _ActiveJob) -> bool:
-        if active.terminal_outcome is not None:
-            return True
-
+    def _capture_terminal_outcome(self, active: _ActiveJob) -> TerminalOutcome | None:
         elapsed = time.monotonic() - active.started_at
         if active.process.is_alive() and elapsed <= self.timeout_seconds:
-            return False
+            return None
         if active.process.is_alive():
             self._stop_process(active)
-            active.terminal_outcome = (
+            return (
                 "failed",
                 {
                     "code": "analysis_timeout",
                     "message": "Analysis exceeded the configured time limit.",
                 },
             )
-            return True
 
         active.process.join(timeout=1)
         try:
@@ -359,29 +457,43 @@ class JobManager:
                 "failed",
                 {"code": "worker_crashed", "message": "Analysis worker exited unexpectedly."},
             )
-        active.terminal_outcome = (outcome, payload)
-        return True
+        return outcome, payload
 
-    def _persist_terminal_outcome(self, run_id: str, active: _ActiveJob) -> bool:
-        terminal_outcome = active.terminal_outcome
-        if terminal_outcome is None:
-            raise RuntimeError("terminal outcome has not been captured")
-        outcome, payload = terminal_outcome
+    @staticmethod
+    def _should_log_retry(failures: int) -> bool:
+        return failures > 0 and failures & (failures - 1) == 0
+
+    def _persist_terminal_outcome(self, run_id: str, pending: _PendingTerminal) -> bool:
+        outcome, payload = pending.terminal_outcome
         try:
             if outcome == "succeeded":
                 self.repository.mark_succeeded(run_id, payload)
             else:
                 self.repository.mark_failed(run_id, payload["code"], payload["message"])
         except OSError as exc:
-            active.persistence_failures += 1
-            active.next_persistence_attempt_at = (
-                time.monotonic() + self._repository_retry_delay(active.persistence_failures)
+            pending.persistence_failures += 1
+            pending.next_persistence_attempt_at = (
+                time.monotonic() + self._repository_retry_delay(pending.persistence_failures)
             )
-            LOGGER.warning(
-                "job_terminal_manifest_persist_retry",
-                extra={"run_id": run_id, "error_type": type(exc).__name__},
-            )
+            if self._should_log_retry(pending.persistence_failures):
+                LOGGER.warning(
+                    "job_terminal_manifest_persist_retry",
+                    extra={
+                        "run_id": run_id,
+                        "error_type": type(exc).__name__,
+                        "attempt": pending.persistence_failures,
+                    },
+                )
             return False
+        if pending.persistence_failures:
+            LOGGER.info(
+                "job_terminal_manifest_persist_recovered",
+                extra={
+                    "run_id": run_id,
+                    "failed_attempts": pending.persistence_failures,
+                    "wait_seconds": max(0.0, time.monotonic() - pending.captured_at),
+                },
+            )
         return True
 
     def _close_result_queue(self, run_id: str, active: _ActiveJob) -> None:
@@ -395,26 +507,48 @@ class JobManager:
                 extra={"run_id": run_id, "error_type": type(exc).__name__},
             )
         finally:
-            # The result is already copied into terminal_outcome. A local queue cleanup
-            # failure must not consume worker capacity after the manifest is durable.
+            # The result is already copied into the in-process terminal backlog. A local
+            # queue cleanup failure must not keep an exited process in worker capacity.
             active.result_queue_closed = True
 
-    def _release_active(self, run_id: str, active: _ActiveJob) -> None:
+    def _move_to_terminal_pending(
+        self,
+        run_id: str,
+        active: _ActiveJob,
+        outcome: TerminalOutcome,
+    ) -> None:
+        pending = _PendingTerminal(outcome, captured_at=time.monotonic())
         with self._lock:
             if self._active.get(run_id) is active:
                 del self._active[run_id]
+                self._terminal_pending[run_id] = pending
+                if len(self._active) + len(self._terminal_pending) > self.terminal_capacity:
+                    raise RuntimeError("terminal persistence capacity invariant violated")
+                self._refresh_persistence_saturation_locked()
+
+    def _release_terminal_pending(self, run_id: str, pending: _PendingTerminal) -> None:
+        with self._lock:
+            if self._terminal_pending.get(run_id) is pending:
+                del self._terminal_pending[run_id]
+                self._refresh_persistence_saturation_locked()
 
     def _finish_active(self) -> None:
         with self._lock:
-            snapshot = list(self._active.items())
-        for run_id, active in snapshot:
-            if not self._capture_terminal_outcome(active):
-                continue
-            if time.monotonic() < active.next_persistence_attempt_at:
+            active_snapshot = list(self._active.items())
+        for run_id, active in active_snapshot:
+            outcome = self._capture_terminal_outcome(active)
+            if outcome is None:
                 continue
             self._close_result_queue(run_id, active)
-            if self._persist_terminal_outcome(run_id, active):
-                self._release_active(run_id, active)
+            self._move_to_terminal_pending(run_id, active, outcome)
+
+        with self._lock:
+            pending_snapshot = list(self._terminal_pending.items())
+        for run_id, pending in pending_snapshot:
+            if time.monotonic() < pending.next_persistence_attempt_at:
+                continue
+            if self._persist_terminal_outcome(run_id, pending):
+                self._release_terminal_pending(run_id, pending)
 
     def _supervise(self) -> None:
         try:
@@ -423,7 +557,10 @@ class JobManager:
                 self._start_pending()
                 self._stop.wait(0.02)
         except Exception as exc:  # noqa: BLE001 -- supervisor boundary must become observable.
-            self._supervisor_failed.set()
+            # Serialize failure publication with admission. At most the request that
+            # linearized before this lock can still be accepted.
+            with self._submission_lock:
+                self._supervisor_failed.set()
             LOGGER.error(
                 "job_supervisor_failed",
                 extra={"error_type": type(exc).__name__},
@@ -431,9 +568,9 @@ class JobManager:
         finally:
             self._shutdown_jobs()
 
-    def _capture_shutdown_outcome(self, run_id: str, active: _ActiveJob) -> bool:
-        if active.terminal_outcome is not None:
-            return True
+    def _capture_shutdown_outcome(
+        self, run_id: str, active: _ActiveJob
+    ) -> TerminalOutcome | None:
         try:
             self._stop_process(active)
             try:
@@ -447,17 +584,17 @@ class JobManager:
                     },
                 )
         except (AssertionError, OSError, ValueError) as exc:
-            active.persistence_failures += 1
-            active.next_persistence_attempt_at = (
-                time.monotonic() + self._repository_retry_delay(active.persistence_failures)
+            active.shutdown_capture_failures += 1
+            active.next_shutdown_capture_attempt_at = (
+                time.monotonic()
+                + self._repository_retry_delay(active.shutdown_capture_failures)
             )
             LOGGER.warning(
                 "job_shutdown_capture_retry",
                 extra={"run_id": run_id, "error_type": type(exc).__name__},
             )
-            return False
-        active.terminal_outcome = (outcome, payload)
-        return True
+            return None
+        return outcome, payload
 
     def _shutdown_jobs(self) -> None:
         # Serialize with submission mutation so failed pending items can be restored to
@@ -465,14 +602,25 @@ class JobManager:
         with self._submission_lock:
             with self._lock:
                 active_jobs = dict(self._active)
-            for run_id, active in active_jobs.items():
+                terminal_jobs = dict(self._terminal_pending)
+            for terminal_pending in terminal_jobs.values():
                 # Shutdown gets its own bounded retry window instead of inheriting a
                 # backoff deadline that may already extend beyond that window.
-                active.next_persistence_attempt_at = 0.0
+                terminal_pending.next_persistence_attempt_at = 0.0
+            for active in active_jobs.values():
+                active.next_shutdown_capture_attempt_at = 0.0
+
+            for run_id, active in list(active_jobs.items()):
                 try:
-                    self._capture_shutdown_outcome(run_id, active)
+                    outcome = self._capture_shutdown_outcome(run_id, active)
+                    if outcome is not None:
+                        self._close_result_queue(run_id, active)
+                        self._move_to_terminal_pending(run_id, active, outcome)
+                        with self._lock:
+                            terminal_jobs[run_id] = self._terminal_pending[run_id]
+                        del active_jobs[run_id]
                 except Exception as exc:  # noqa: BLE001 -- isolate cleanup between jobs.
-                    active.next_persistence_attempt_at = float("inf")
+                    active.next_shutdown_capture_attempt_at = float("inf")
                     LOGGER.error(
                         "job_shutdown_capture_failed",
                         extra={"run_id": run_id, "error_type": type(exc).__name__},
@@ -492,80 +640,101 @@ class JobManager:
             # Process termination and queue capture have their own bounded waits. Start
             # the persistence retry budget only after every active job got a first turn.
             deadline = time.monotonic() + _SHUTDOWN_RETRY_TIMEOUT_SECONDS
-            while active_jobs or pending_jobs:
+            while active_jobs or terminal_jobs or pending_jobs:
                 now = time.monotonic()
                 for run_id, active in list(active_jobs.items()):
-                    if now < active.next_persistence_attempt_at:
+                    if now < active.next_shutdown_capture_attempt_at:
                         continue
                     try:
-                        if not self._capture_shutdown_outcome(run_id, active):
+                        outcome = self._capture_shutdown_outcome(run_id, active)
+                        if outcome is None:
                             continue
                         self._close_result_queue(run_id, active)
-                        if self._persist_terminal_outcome(run_id, active):
-                            self._release_active(run_id, active)
-                            del active_jobs[run_id]
+                        self._move_to_terminal_pending(run_id, active, outcome)
+                        with self._lock:
+                            terminal_jobs[run_id] = self._terminal_pending[run_id]
+                        del active_jobs[run_id]
                     except Exception as exc:  # noqa: BLE001 -- isolate cleanup between jobs.
-                        active.next_persistence_attempt_at = float("inf")
+                        active.next_shutdown_capture_attempt_at = float("inf")
                         LOGGER.error(
                             "job_shutdown_active_cleanup_failed",
                             extra={"run_id": run_id, "error_type": type(exc).__name__},
                         )
 
-                for pending in list(pending_jobs):
-                    if now < pending.next_persistence_attempt_at:
+                for run_id, terminal in list(terminal_jobs.items()):
+                    if now < terminal.next_persistence_attempt_at:
+                        continue
+                    try:
+                        if self._persist_terminal_outcome(run_id, terminal):
+                            self._release_terminal_pending(run_id, terminal)
+                            del terminal_jobs[run_id]
+                    except Exception as exc:  # noqa: BLE001 -- isolate cleanup between jobs.
+                        terminal.next_persistence_attempt_at = float("inf")
+                        LOGGER.error(
+                            "job_shutdown_terminal_cleanup_failed",
+                            extra={"run_id": run_id, "error_type": type(exc).__name__},
+                        )
+
+                for queued_pending in list(pending_jobs):
+                    if now < queued_pending.next_persistence_attempt_at:
                         continue
                     try:
                         self.repository.mark_failed(
-                            pending.run_id,
+                            queued_pending.run_id,
                             "service_stopped",
                             "Analysis was cancelled because the service stopped.",
                         )
                     except OSError as exc:
-                        pending.persistence_failures += 1
-                        pending.next_persistence_attempt_at = (
+                        queued_pending.persistence_failures += 1
+                        queued_pending.next_persistence_attempt_at = (
                             time.monotonic()
-                            + self._repository_retry_delay(pending.persistence_failures)
+                            + self._repository_retry_delay(queued_pending.persistence_failures)
                         )
                         LOGGER.warning(
                             "pending_job_manifest_persist_retry",
                             extra={
-                                "run_id": pending.run_id,
+                                "run_id": queued_pending.run_id,
                                 "error_type": type(exc).__name__,
                             },
                         )
                     except Exception as exc:  # noqa: BLE001 -- isolate cleanup between jobs.
-                        pending.next_persistence_attempt_at = float("inf")
+                        queued_pending.next_persistence_attempt_at = float("inf")
                         LOGGER.error(
                             "job_shutdown_pending_cleanup_failed",
                             extra={
-                                "run_id": pending.run_id,
+                                "run_id": queued_pending.run_id,
                                 "error_type": type(exc).__name__,
                             },
                         )
                     else:
-                        pending_jobs.remove(pending)
+                        pending_jobs.remove(queued_pending)
 
-                if not active_jobs and not pending_jobs:
+                if not active_jobs and not terminal_jobs and not pending_jobs:
                     break
                 now = time.monotonic()
                 if now >= deadline:
                     break
                 next_attempts = [
-                    active.next_persistence_attempt_at for active in active_jobs.values()
-                ] + [pending.next_persistence_attempt_at for pending in pending_jobs]
+                    active.next_shutdown_capture_attempt_at for active in active_jobs.values()
+                ] + [
+                    terminal.next_persistence_attempt_at for terminal in terminal_jobs.values()
+                ] + [queued.next_persistence_attempt_at for queued in pending_jobs]
                 next_attempts = [value for value in next_attempts if value != float("inf")]
                 if not next_attempts:
                     break
                 next_attempt = min(next_attempts, default=deadline)
                 time.sleep(min(max(next_attempt - now, 0.001), deadline - now))
 
-            for pending in pending_jobs:
-                self._pending.put_nowait((pending.run_id, pending.config_payload))
-            if active_jobs or pending_jobs:
+            for queued_pending in pending_jobs:
+                self._pending.put_nowait(
+                    (queued_pending.run_id, queued_pending.config_payload)
+                )
+            if active_jobs or terminal_jobs or pending_jobs:
                 LOGGER.error(
                     "job_shutdown_persistence_deferred",
                     extra={
                         "active_jobs": len(active_jobs),
+                        "terminal_jobs": len(terminal_jobs),
                         "pending_jobs": len(pending_jobs),
                     },
                 )

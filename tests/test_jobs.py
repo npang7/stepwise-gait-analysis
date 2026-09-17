@@ -16,7 +16,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from stepwise.jobs import JobManager, QueueFullError, _ActiveJob
+from stepwise.jobs import (
+    TERMINAL_PERSISTENCE_SATURATED_CODE,
+    JobManager,
+    QueueFullError,
+    _ActiveJob,
+    _PendingTerminal,
+)
 from stepwise.models import AnalysisConfig, JobManifest
 from stepwise.storage import JobRepository
 
@@ -242,10 +248,16 @@ class JobManagerTests(unittest.TestCase):
         manager._lock = threading.RLock()
         manager._submission_lock = threading.Lock()
         manager._active = jobs
+        manager._terminal_pending = {}
         manager._pending = queue.Queue(maxsize=4)
+        manager.max_workers = 2
+        manager.terminal_capacity = 6
+        manager._persistence_saturated = False
         manager._start_failures = 0
         manager._next_start_attempt_at = 0.0
+        manager._stop = threading.Event()
         manager._supervisor_failed = threading.Event()
+        manager._thread = StubSupervisorThread()  # type: ignore[assignment]
         return manager
 
     def test_supervisor_availability_fails_closed_when_stopping_or_thread_dead(self) -> None:
@@ -289,7 +301,7 @@ class JobManagerTests(unittest.TestCase):
 
         manager._finish_active()
 
-        self.assertEqual(set(manager._active), {"first"})
+        self.assertEqual(set(manager._terminal_pending), {"first"})
         self.assertEqual(first_queue.get_calls, 1)
         self.assertTrue(first_queue.closed)
         self.assertEqual(first_queue.close_calls, 1)
@@ -302,7 +314,7 @@ class JobManagerTests(unittest.TestCase):
 
         manager._finish_active()
         self.assertEqual(len(repository.succeeded_attempts), 2, "retry must be throttled")
-        manager._active["first"].next_persistence_attempt_at = 0.0
+        manager._terminal_pending["first"].next_persistence_attempt_at = 0.0
         manager._finish_active()
 
         self.assertEqual(manager.active_count, 0)
@@ -311,57 +323,119 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(first_queue.close_calls, 1)
         self.assertEqual(repository.succeeded_attempts[-1], ("first", first_payload))
 
-    def test_persistence_outage_keeps_worker_slot_until_cached_result_is_durable(self) -> None:
-        payload = {"summary": {"job": "blocked"}}
-        result_queue = StubResultQueue(("succeeded", payload))
+    def test_persistence_outage_releases_worker_slots_for_new_work(self) -> None:
+        first_payload = {"summary": {"job": "first-blocked"}}
+        second_payload = {"summary": {"job": "second-blocked"}}
         repository = FlakyRepository()
-        repository.always_fail_succeeded_for.add("blocked")
+        repository.always_fail_succeeded_for.update({"first", "second"})
         manager = self.manager_with_active_jobs(
             repository,
             {
-                "blocked": _ActiveJob(
+                "first": _ActiveJob(
                     process=StubProcess(alive=False),
-                    result_queue=result_queue,
+                    result_queue=StubResultQueue(("succeeded", first_payload)),
+                    started_at=time.monotonic(),
+                ),
+                "second": _ActiveJob(
+                    process=StubProcess(alive=False),
+                    result_queue=StubResultQueue(("succeeded", second_payload)),
+                    started_at=time.monotonic(),
+                ),
+            },
+        )
+        manager._stop = threading.Event()
+        manager.max_workers = 2
+        manager.terminal_capacity = 6
+        manager._context = StubContext()  # type: ignore[assignment]
+        manager._pending.put_nowait(("third", {"smooth_window": 3}))
+
+        manager._finish_active()
+        manager._start_pending()
+
+        self.assertEqual(set(manager._active), {"third"})
+        self.assertEqual(set(manager._terminal_pending), {"first", "second"})
+        self.assertEqual(manager._pending.qsize(), 0)
+        third = manager._active["third"]
+        third.process.alive = False
+        third.result_queue.item = ("succeeded", {"summary": {"job": "third"}})
+        manager._finish_active()
+
+        self.assertEqual(manager.active_count, 0)
+        self.assertEqual(set(manager._terminal_pending), {"first", "second"})
+        self.assertIn(("third", {"summary": {"job": "third"}}), repository.succeeded_attempts)
+
+    def test_terminal_capacity_stops_workers_and_reopens_after_persistence(self) -> None:
+        repository = FlakyRepository()
+        manager = self.manager_with_active_jobs(
+            repository,
+            {
+                "active": _ActiveJob(
+                    process=StubProcess(alive=True),
+                    result_queue=StubResultQueue(),
                     started_at=time.monotonic(),
                 )
             },
         )
-        manager._stop = threading.Event()
-        manager.max_workers = 1
+        manager.max_workers = 2
+        manager.terminal_capacity = 3
         manager._context = StubContext()  # type: ignore[assignment]
-        manager._pending.put_nowait(("next", {"smooth_window": 3}))
+        manager._terminal_pending = {
+            "blocked": _PendingTerminal(
+                ("succeeded", {"summary": {"job": "blocked"}}),
+                captured_at=time.monotonic() - 4,
+            ),
+            "recoverable": _PendingTerminal(
+                ("succeeded", {"summary": {"job": "recoverable"}}),
+                captured_at=time.monotonic() - 2,
+            ),
+        }
+        manager._pending.put_nowait(("queued", {"smooth_window": 3}))
 
-        manager._finish_active()
+        snapshot = manager.availability_snapshot()
+        self.assertFalse(snapshot.available)
+        self.assertEqual(snapshot.error_code, TERMINAL_PERSISTENCE_SATURATED_CODE)
+        self.assertEqual(snapshot.pending_count, 2)
         manager._start_pending()
-
-        self.assertEqual(manager.active_count, 1)
+        self.assertEqual(set(manager._active), {"active"})
         self.assertEqual(manager._pending.qsize(), 1)
-        self.assertEqual(result_queue.get_calls, 1)
-        self.assertTrue(result_queue.closed)
-        self.assertEqual(result_queue.close_calls, 1)
 
-        manager._active["blocked"].next_persistence_attempt_at = 0.0
-        manager._finish_active()
+        pending = manager._terminal_pending["recoverable"]
+        self.assertTrue(manager._persist_terminal_outcome("recoverable", pending))
+        manager._release_terminal_pending("recoverable", pending)
+        self.assertTrue(manager.availability_snapshot().available)
         manager._start_pending()
-        self.assertEqual(manager.active_count, 1)
-        self.assertEqual(manager._pending.qsize(), 1)
-        self.assertEqual(result_queue.get_calls, 1)
+        self.assertEqual(set(manager._active), {"active", "queued"})
+        self.assertLessEqual(
+            len(manager._active) + len(manager._terminal_pending),
+            manager.terminal_capacity,
+        )
 
-        repository.always_fail_succeeded_for.clear()
-        manager._active["blocked"].next_persistence_attempt_at = 0.0
-        manager._finish_active()
-        manager._start_pending()
+    def test_terminal_retry_logs_only_powers_of_two_and_recovery(self) -> None:
+        repository = FlakyRepository()
+        repository.always_fail_succeeded_for.add("blocked")
+        manager = self.manager_with_active_jobs(repository, {})
+        pending = _PendingTerminal(
+            ("succeeded", {"summary": {"job": "blocked"}}),
+            captured_at=time.monotonic() - 1,
+        )
 
-        self.assertEqual(set(manager._active), {"next"})
-        self.assertEqual(manager._pending.qsize(), 0)
-        self.assertEqual(result_queue.get_calls, 1)
-        self.assertTrue(result_queue.closed)
-        blocked_attempts = [
-            attempt_payload
-            for run_id, attempt_payload in repository.succeeded_attempts
-            if run_id == "blocked"
-        ]
-        self.assertEqual(blocked_attempts, [payload, payload, payload])
+        with (
+            patch("stepwise.jobs.LOGGER.warning") as warning,
+            patch("stepwise.jobs.LOGGER.info") as info,
+        ):
+            for _ in range(5):
+                pending.next_persistence_attempt_at = 0.0
+                self.assertFalse(manager._persist_terminal_outcome("blocked", pending))
+            repository.always_fail_succeeded_for.clear()
+            pending.next_persistence_attempt_at = 0.0
+            self.assertTrue(manager._persist_terminal_outcome("blocked", pending))
+
+        self.assertEqual(
+            [call.kwargs["extra"]["attempt"] for call in warning.call_args_list],
+            [1, 2, 4],
+        )
+        info.assert_called_once()
+        self.assertEqual(info.call_args.args[0], "job_terminal_manifest_persist_recovered")
 
     def test_result_queue_close_failure_does_not_hold_a_durable_job_slot(self) -> None:
         first_payload = {"summary": {"job": "first"}}
@@ -422,7 +496,7 @@ class JobManagerTests(unittest.TestCase):
 
         manager._finish_active()
 
-        self.assertEqual(set(manager._active), {"timed-out"})
+        self.assertEqual(set(manager._terminal_pending), {"timed-out"})
         self.assertEqual(process.terminate_calls, 1)
         self.assertEqual(result_queue.get_calls, 0)
         self.assertTrue(result_queue.closed)
@@ -437,7 +511,7 @@ class JobManagerTests(unittest.TestCase):
             ],
         )
 
-        manager._active["timed-out"].next_persistence_attempt_at = 0.0
+        manager._terminal_pending["timed-out"].next_persistence_attempt_at = 0.0
         manager._finish_active()
 
         self.assertEqual(manager.active_count, 0)
@@ -598,7 +672,6 @@ class JobManagerTests(unittest.TestCase):
                 ),
             },
         )
-        manager._active["first"].next_persistence_attempt_at = time.monotonic() + 60
         manager._pending.put_nowait(("pending-first", {"smooth_window": 3}))
         manager._pending.put_nowait(("pending-second", {"smooth_window": 3}))
 
@@ -739,7 +812,8 @@ class JobManagerTests(unittest.TestCase):
         with patch("stepwise.jobs._SHUTDOWN_RETRY_TIMEOUT_SECONDS", 0.0):
             manager._shutdown_jobs()
 
-        self.assertEqual(set(manager._active), {"active"})
+        self.assertEqual(set(manager._active), set())
+        self.assertEqual(set(manager._terminal_pending), {"active"})
         self.assertTrue(active_queue.closed)
         self.assertEqual(manager._pending.qsize(), 1)
         self.assertEqual(manager._pending.unfinished_tasks, 1)
@@ -754,18 +828,16 @@ class JobManagerTests(unittest.TestCase):
         manager = self.manager_with_active_jobs(
             repository,
             {
-                "malformed": _ActiveJob(
-                    process=StubProcess(alive=False),
-                    result_queue=StubResultQueue(),
-                    started_at=time.monotonic(),
-                    terminal_outcome=("failed", {"message": "missing code"}),
-                ),
                 "second": _ActiveJob(
                     process=second_process,
                     result_queue=StubResultQueue(),
                     started_at=time.monotonic(),
                 ),
             },
+        )
+        manager._terminal_pending["malformed"] = _PendingTerminal(
+            ("failed", {"message": "missing code"}),
+            captured_at=time.monotonic(),
         )
         manager._stop = threading.Event()
         manager._thread = StubSupervisorThread()  # type: ignore[assignment]
@@ -790,7 +862,8 @@ class JobManagerTests(unittest.TestCase):
             "job_supervisor_failed",
             extra={"error_type": "RuntimeError"},
         )
-        self.assertEqual(set(manager._active), {"malformed"})
+        self.assertEqual(set(manager._active), set())
+        self.assertEqual(set(manager._terminal_pending), {"malformed"})
         self.assertEqual(second_process.terminate_calls, 1)
         self.assertEqual(manager._pending.qsize(), 0)
         self.assertEqual(
