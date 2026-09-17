@@ -12,6 +12,8 @@ from pathlib import Path
 
 from .models import JobManifest, JobStatus
 
+_MANIFEST_LOCK_STRIPES = 32
+
 
 class JobNotFoundError(LookupError):
     pass
@@ -52,6 +54,12 @@ class JobRepository:
         self.root.mkdir(parents=True, exist_ok=True)
         self.staging_dir = self.root / ".staging"
         self.staging_dir.mkdir(exist_ok=True)
+        # These RLocks coordinate threads sharing this repository instance. They do not
+        # protect separate service processes or replicas that share one data directory;
+        # those deployments require an interprocess file lock or external coordination.
+        self._manifest_locks = tuple(
+            threading.RLock() for _ in range(_MANIFEST_LOCK_STRIPES)
+        )
         self._artifact_guard = threading.RLock()
         self._active_artifact_leases: dict[str, int] = {}
         self._artifact_locks = tuple(threading.Lock() for _ in range(32))
@@ -75,6 +83,11 @@ class JobRepository:
     def artifact_dir(self, run_id: str) -> Path:
         return self.run_dir(run_id) / "artifacts"
 
+    def _manifest_lock_for(self, run_id: str) -> threading.RLock:
+        canonical_run_id = self._validate_run_id(run_id)
+        index = uuid.UUID(canonical_run_id).int % len(self._manifest_locks)
+        return self._manifest_locks[index]
+
     def create(self) -> JobManifest:
         run_id = str(uuid.uuid4())
         run_dir = self.run_dir(run_id)
@@ -91,27 +104,29 @@ class JobRepository:
         return self.save(manifest)
 
     def save(self, manifest: JobManifest) -> JobManifest:
-        run_dir = self.run_dir(manifest.run_id)
-        if not run_dir.is_dir():
-            raise JobNotFoundError(manifest.run_id)
-        destination = run_dir / "manifest.json"
-        temporary = run_dir / "manifest.json.tmp"
-        temporary.write_text(
-            json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
-        temporary.replace(destination)
-        return manifest
+        with self._manifest_lock_for(manifest.run_id):
+            run_dir = self.run_dir(manifest.run_id)
+            if not run_dir.is_dir():
+                raise JobNotFoundError(manifest.run_id)
+            destination = run_dir / "manifest.json"
+            temporary = run_dir / "manifest.json.tmp"
+            temporary.write_text(
+                json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
+            temporary.replace(destination)
+            return manifest
 
     def get(self, run_id: str) -> JobManifest:
-        manifest_path = self.run_dir(run_id) / "manifest.json"
-        if not manifest_path.is_file():
-            raise JobNotFoundError(run_id)
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-            return JobManifest.from_dict(payload)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            raise JobNotFoundError(run_id) from exc
+        with self._manifest_lock_for(run_id):
+            manifest_path = self.run_dir(run_id) / "manifest.json"
+            if not manifest_path.is_file():
+                raise JobNotFoundError(run_id)
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                return JobManifest.from_dict(payload)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                raise JobNotFoundError(run_id) from exc
 
     def write_input(self, run_id: str, name: str, content: bytes) -> Path:
         if name not in {"walking.txt", "standing.txt"}:
@@ -154,11 +169,12 @@ class JobRepository:
         return destination
 
     def delete_run(self, run_id: str) -> None:
-        run_dir = self.run_dir(run_id).resolve()
-        if run_dir.parent != self.root or run_dir == self.root:
-            raise JobNotFoundError(run_id)
-        if run_dir.exists():
-            shutil.rmtree(run_dir)
+        with self._manifest_lock_for(run_id):
+            run_dir = self.run_dir(run_id).resolve()
+            if run_dir.parent != self.root or run_dir == self.root:
+                raise JobNotFoundError(run_id)
+            if run_dir.exists():
+                shutil.rmtree(run_dir)
 
     def _transition(
         self,
@@ -169,16 +185,17 @@ class JobRepository:
         error_code: str | None = None,
         error_message: str | None = None,
     ) -> JobManifest:
-        previous = self.get(run_id)
-        manifest = replace(
-            previous,
-            status=status,
-            updated_at=_timestamp(),
-            result=result,
-            error_code=error_code,
-            error_message=error_message,
-        )
-        return self.save(manifest)
+        with self._manifest_lock_for(run_id):
+            previous = self.get(run_id)
+            manifest = replace(
+                previous,
+                status=status,
+                updated_at=_timestamp(),
+                result=result,
+                error_code=error_code,
+                error_message=error_message,
+            )
+            return self.save(manifest)
 
     def mark_running(self, run_id: str) -> JobManifest:
         return self._transition(run_id, "running")
@@ -200,16 +217,17 @@ class JobRepository:
             if not path.is_dir():
                 continue
             try:
-                manifest = self.get(path.name)
+                with self._manifest_lock_for(path.name):
+                    manifest = self.get(path.name)
+                    if manifest.status in {"queued", "running"}:
+                        self.mark_failed(
+                            manifest.run_id,
+                            "service_restarted",
+                            "Analysis was interrupted because the service restarted.",
+                        )
+                        recovered.append(manifest.run_id)
             except JobNotFoundError:
                 continue
-            if manifest.status in {"queued", "running"}:
-                self.mark_failed(
-                    manifest.run_id,
-                    "service_restarted",
-                    "Analysis was interrupted because the service restarted.",
-                )
-                recovered.append(manifest.run_id)
         return recovered
 
     def artifact_destination(self, run_id: str, name: str) -> Path:
@@ -264,19 +282,20 @@ class JobRepository:
                 continue
             with self._artifact_guard:
                 try:
-                    manifest = self.get(path.name)
-                    updated_at = datetime.fromisoformat(manifest.updated_at)
+                    with self._manifest_lock_for(path.name):
+                        manifest = self.get(path.name)
+                        updated_at = datetime.fromisoformat(manifest.updated_at)
+                        if (
+                            manifest.status not in {"succeeded", "failed"}
+                            or updated_at >= cutoff
+                            or self._active_artifact_leases.get(manifest.run_id, 0) > 0
+                        ):
+                            continue
+                        resolved = path.resolve()
+                        if resolved.parent != self.root or resolved == self.root:
+                            continue
+                        shutil.rmtree(resolved)
+                        removed.append(manifest.run_id)
                 except (JobNotFoundError, ValueError):
                     continue
-                if (
-                    manifest.status not in {"succeeded", "failed"}
-                    or updated_at >= cutoff
-                    or self._active_artifact_leases.get(manifest.run_id, 0) > 0
-                ):
-                    continue
-                resolved = path.resolve()
-                if resolved.parent != self.root or resolved == self.root:
-                    continue
-                shutil.rmtree(resolved)
-                removed.append(manifest.run_id)
         return removed
