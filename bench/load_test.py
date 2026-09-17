@@ -1512,24 +1512,82 @@ def calibration_failure_reason(
     return None
 
 
-def compare_drift(a1_throughputs: list[float], a2_throughput: float) -> dict[str, Any]:
-    if len(a1_throughputs) != 3 or any(value <= 0 for value in a1_throughputs):
-        raise ValueError("A1 drift control requires three positive throughputs")
-    low = min(a1_throughputs)
-    high = max(a1_throughputs)
-    median = statistics.median(a1_throughputs)
-    detected = not low <= a2_throughput <= high
-    boundary = low if a2_throughput < low else high
-    outside = abs(a2_throughput - boundary) if detected else 0.0
+def compare_drift(
+    a1_completed_counts: list[int],
+    a2_completed_count: int,
+    comparison_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe an A1/A2 level shift without treating a zero-width range as noise."""
+
+    if len(a1_completed_counts) != 3 or any(value <= 0 for value in a1_completed_counts):
+        raise ValueError("A1 drift control requires three positive completed-job counts")
+    if a2_completed_count <= 0:
+        raise ValueError("A2 drift control requires a positive completed-job count")
+
+    median_count = int(statistics.median(a1_completed_counts))
+    delta = a2_completed_count - median_count
+    shift_percent = delta / median_count * 100.0
+    comparisons: list[dict[str, Any]] = []
+    labels: set[str] = set()
+    for target in comparison_targets:
+        label = str(target["label"])
+        if label in labels:
+            raise ValueError(f"duplicate drift comparison label: {label}")
+        labels.add(label)
+        completed_counts_value = target.get("completed_counts")
+        completed_counts: list[int] | None
+        if completed_counts_value is None:
+            completed_counts = None
+        else:
+            completed_counts = [int(value) for value in completed_counts_value]
+            if len(completed_counts) < 2 or any(value <= 0 for value in completed_counts):
+                raise ValueError(
+                    "drift comparison requires at least two positive completed-job counts"
+                )
+        window_limited_value = target.get("window_limited")
+        window_limited = (
+            None if window_limited_value is None else bool(window_limited_value)
+        )
+        spread_value = target.get("repetition_spread_percent")
+        if completed_counts is None or window_limited is None or spread_value is None:
+            comparison = "not-comparable-no-repetition-spread"
+            exceeds: bool | None = None
+            spread: float | None = None
+        else:
+            spread = float(spread_value)
+            if spread < 0:
+                raise ValueError("repetition spread must not be negative")
+            if (window_limited and len(set(completed_counts)) == 1) or spread == 0:
+                comparison = "indeterminate-zero-spread"
+                exceeds = None
+            else:
+                exceeds = abs(shift_percent) > spread
+                comparison = (
+                    "exceeds-observed-spread" if exceeds else "within-observed-spread"
+                )
+        comparisons.append(
+            {
+                "label": label,
+                "completed_counts": completed_counts,
+                "window_limited": window_limited,
+                "repetition_spread_percent": spread,
+                "session_shift_exceeds_repetition_spread": exceeds,
+                "comparison": comparison,
+            }
+        )
+
     return {
-        "a1_min": low,
-        "a1_max": high,
-        "a1_median": median,
-        "a2": a2_throughput,
-        "drift_detected": detected,
-        "signed_change_from_median_percent": (a2_throughput - median) / median * 100.0,
-        "outside_boundary_absolute": outside,
-        "outside_boundary_percent_of_median": outside / median * 100.0,
+        "a1_completed_counts": list(a1_completed_counts),
+        "a1_median_completed_count": median_count,
+        "a2_completed_count": a2_completed_count,
+        "completed_count_delta": delta,
+        "signed_count_shift_percent": shift_percent,
+        "level_shift_observed": delta != 0,
+        "comparison_basis": (
+            "formal completed-job counts compared with each measurement's observed "
+            "repetition throughput spread"
+        ),
+        "point_spread_comparisons": comparisons,
     }
 
 
@@ -3189,8 +3247,8 @@ def _report_markdown(results: dict[str, Any]) -> str:
         [
             "## Matrix",
             "",
-            "| samples | C | n by repetition | throughput median/min | spread | citable | quantile policy |",
-            "|---:|---:|---|---:|---:|---|---|",
+            "| samples | C | n by repetition | throughput median/min | spread | A2 shift vs spread | citable | quantile policy |",
+            "|---:|---:|---|---:|---:|---|---|---|",
         ]
     )
     for point in results.get("points", []):
@@ -3198,7 +3256,9 @@ def _report_markdown(results: dict[str, Any]) -> str:
         lines.append(
             f"| {point['sample_count']} | {point['concurrency']} | {counts} | "
             f"{point['throughput_median_jobs_per_minute']:.6g} | "
-            f"{point['throughput_spread_percent']:.3f}% | {point['citable']} | "
+            f"{point['throughput_spread_percent']:.3f}% | "
+            f"{point.get('session_shift_comparison', 'not-evaluated')} | "
+            f"{point['citable']} | "
             f"{point['latency_quantile_summary']} |"
         )
     lines.extend(["", "## Repetition details", ""])
@@ -3317,6 +3377,45 @@ def _report_markdown(results: dict[str, Any]) -> str:
             f"A2: `{json.dumps(results.get('a2'), ensure_ascii=False, sort_keys=True)}`",
             "",
             f"Drift: `{json.dumps(results.get('drift'), ensure_ascii=False, sort_keys=True)}`",
+        ]
+    )
+    drift = results.get("drift")
+    if isinstance(drift, dict) and "a1_completed_counts" in drift:
+        lines.extend(
+            [
+                "",
+                "## A2 session-level shift analysis",
+                "",
+                (
+                    f"- A1 formal completed counts: `{drift['a1_completed_counts']}`; "
+                    f"A2: `{drift['a2_completed_count']}`; delta: "
+                    f"`{drift['completed_count_delta']}` jobs."
+                ),
+                f"- Signed count shift: `{drift['signed_count_shift_percent']:.3f}%`.",
+                (
+                    "- This level shift is compared with each measurement's own observed "
+                    "repetition spread; a zero spread is indeterminate rather than a "
+                    "zero-width gate."
+                ),
+                "",
+                "| measurement | completed counts | repetition spread | comparison | exceeds spread |",
+                "|---|---|---:|---|---|",
+            ]
+        )
+        for comparison in drift["point_spread_comparisons"]:
+            spread = comparison["repetition_spread_percent"]
+            spread_text = "n/a" if spread is None else f"{spread:.3f}%"
+            counts = comparison["completed_counts"]
+            counts_text = (
+                "n/a" if counts is None else json.dumps(counts, separators=(",", ":"))
+            )
+            lines.append(
+                f"| {comparison['label']} | {counts_text} | {spread_text} | "
+                f"{comparison['comparison']} | "
+                f"{comparison['session_shift_exceeds_repetition_spread']} |"
+            )
+    lines.extend(
+        [
             "",
             "## Limitations",
             "",
@@ -3324,7 +3423,7 @@ def _report_markdown(results: dict[str, Any]) -> str:
             "- Closed-loop latency is service-capacity evidence, not open-loop user-perceived latency.",
             "- End-to-end observations include up to one 50 ms polling interval of quantization.",
             "- Generator, parent, and workers contend for the same logical processors.",
-            "- Session drift and thermal behavior are adjudicated by the final A2 control.",
+            "- A2 is a level-shift context check; each measurement is interpreted against its own repetition spread.",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -3702,21 +3801,61 @@ async def run_suite(output_dir: Path, logger: RunLogger) -> dict[str, Any]:
             if point["sample_count"] == 30_000 and point["concurrency"] == 1
         )
         results["a2"] = a2
-        results["drift"] = compare_drift(
-            a1["throughputs_jobs_per_minute"], a2["throughput_jobs_per_minute"]
-        )
-        if results["drift"]["drift_detected"]:
-            for point in results["points"]:
-                if not (point["sample_count"] == 30_000 and point["concurrency"] == 1):
-                    point["session_drift_affected"] = True
+        comparison_targets = [
+            {
+                "label": f"n{point['sample_count']}-c{point['concurrency']}",
+                "completed_counts": [
+                    int(row["formal"]["n"]) for row in point["repetitions"]
+                ],
+                "window_limited": all(
+                    int(row["formal"]["n"]) < TARGET_COMPLETIONS
+                    for row in point["repetitions"]
+                ),
+                "repetition_spread_percent": point["throughput_spread_percent"],
+            }
+            for point in results["points"]
+        ]
+        non_repetition_scenarios = [
+            name
             for name in (
                 "contract_faults",
                 "timeout_fault",
                 "ttl_fault",
                 "fallback_429_burst",
-            ):
-                if name in results:
-                    results[name]["session_drift_affected"] = True
+                "a2",
+            )
+            if name in results
+        ]
+        comparison_targets.extend(
+            {
+                "label": name,
+                "completed_counts": None,
+                "window_limited": None,
+                "repetition_spread_percent": None,
+            }
+            for name in non_repetition_scenarios
+        )
+        results["drift"] = compare_drift(
+            [int(row["formal"]["n"]) for row in a1["repetitions"]],
+            int(a2["formal"]["n"]),
+            comparison_targets,
+        )
+        comparisons = {
+            str(row["label"]): row for row in results["drift"]["point_spread_comparisons"]
+        }
+        for point in results["points"]:
+            label = f"n{point['sample_count']}-c{point['concurrency']}"
+            comparison = comparisons[label]
+            point["session_shift_comparison"] = comparison["comparison"]
+            point["session_shift_exceeds_repetition_spread"] = comparison[
+                "session_shift_exceeds_repetition_spread"
+            ]
+        for name in non_repetition_scenarios:
+            comparison = comparisons[name]
+            results[name]["session_shift_comparison"] = comparison["comparison"]
+            results[name]["session_shift_exceeds_repetition_spread"] = comparison[
+                "session_shift_exceeds_repetition_spread"
+            ]
     results["correctness"] = {str(key): oracle.summary() for key, oracle in oracles.items()}
     results["completed_at"] = datetime.now(UTC).isoformat()
     _atomic_json(output_dir / "raw-results.json", results)

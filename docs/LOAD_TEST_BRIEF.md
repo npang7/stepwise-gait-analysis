@@ -169,9 +169,12 @@ process create time、启动/health-ready/停止时间、退出码及 worker PID
 available memory、所需门槛及完整代入算式，不得把未测点写入吞吐表。
 
 整个矩阵与故障测试完成后，以相同口径和全新服务进程再跑一次 30,000 样本、
-并发度 1（A2）。A2 吞吐落在开头三次并发度 1（A1）的 min-max 闭区间内，判定
-会话未检测到漂移；落在区间外则报告相对 A1 中位数及最近边界的漂移幅度，并将
-A1 之后的点标记为 `session-drift-affected`。不自动重跑。
+并发度 1（A2）。A1/A2 必须以正式完成作业数、实际窗口和中位计数差表述，
+不再用量化吞吐的 min-max 闭区间作为全局判据。将 A2 相对 A1 中位计数的变化
+百分比与每个测量点自身的 throughput repetition spread 比较：spread 大于零时，
+分别记录 `within-observed-spread` 或 `exceeds-observed-spread`；观测到的 spread 为零时
+记为 `indeterminate-zero-spread`，不把零当作噪声阈值。故障测试和单次 A2 没有
+repetition spread，记为 `not-comparable-no-repetition-spread`。保留数据，不自动重跑。
 
 ---
 
@@ -327,3 +330,8 @@ Phase 1 有"最大上传校验期间 < 250 ms"的既有断言，**那是单请�
    佐证，直接指标仍可单独判废。曾提出的“Page Reads/sec 显著高于空闲基线”因
    被工作负载自身文件 I/O 污染且阈值未定义而撤回。此次是第五次同类修正；前四次
    为未触碰阶段 ±5%、`|A1−A2|` 噪声底、preflight 8 GiB，以及校准误用计时规则。
+6. **A2 零宽区间阈值。** 用三次 A1 量化吞吐的 min-max 闭区间判定全局漂移，
+   在三次完成作业数相同时会得到零宽阈值，任何一个作业的差异都会被放大为
+   全局漂移，属于第六次同类阈值误用。今后以作业计数表述 A1/A2 水平差，并与
+   每个测量点自身观测到的 repetition spread 比较；零 spread 明确记为
+   `indeterminate-zero-spread`，不用作零宽 gate。

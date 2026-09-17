@@ -20,6 +20,7 @@ from bench.load_test import (
     UnsafeStoragePath,
     _cancel_clients_on_fatal,
     _health_probe,
+    _report_markdown,
     _service_path_budget,
     _status_poll_retry_allowed,
     calibration_failure_reason,
@@ -364,13 +365,64 @@ def test_memory_inventory_keeps_basic_rows_when_uss_is_denied() -> None:
     assert "System/cache/kernel" in inventory["note"]
 
 
-def test_drift_comparison_uses_inclusive_a1_range_and_reports_amplitude() -> None:
-    assert not compare_drift([10.0, 12.0, 11.0], 10.0)["drift_detected"]
-    drift = compare_drift([10.0, 12.0, 11.0], 13.0)
-    assert drift["drift_detected"]
-    assert drift["signed_change_from_median_percent"] == pytest.approx(18.18181818)
-    assert drift["outside_boundary_absolute"] == pytest.approx(1.0)
-    assert drift["outside_boundary_percent_of_median"] == pytest.approx(9.09090909)
+def test_drift_comparison_uses_completed_counts_and_each_points_spread() -> None:
+    shift_percent = 2 / 109 * 100
+    drift = compare_drift(
+        [109, 109, 109],
+        111,
+        [
+            {
+                "label": "within",
+                "completed_counts": [200, 200, 200],
+                "window_limited": False,
+                "repetition_spread_percent": 2.0,
+            },
+            {
+                "label": "equal",
+                "completed_counts": [100, 102, 101],
+                "window_limited": True,
+                "repetition_spread_percent": shift_percent,
+            },
+            {
+                "label": "exceeds",
+                "completed_counts": [100, 102, 101],
+                "window_limited": True,
+                "repetition_spread_percent": 1.0,
+            },
+            {
+                "label": "zero",
+                "completed_counts": [109, 109, 109],
+                "window_limited": True,
+                "repetition_spread_percent": 6.2e-13,
+            },
+            {
+                "label": "fault",
+                "completed_counts": None,
+                "window_limited": None,
+                "repetition_spread_percent": None,
+            },
+        ],
+    )
+
+    assert drift["a1_completed_counts"] == [109, 109, 109]
+    assert drift["a1_median_completed_count"] == 109
+    assert drift["a2_completed_count"] == 111
+    assert drift["completed_count_delta"] == 2
+    assert drift["signed_count_shift_percent"] == pytest.approx(shift_percent)
+    assert drift["level_shift_observed"]
+    assert "a1_min" not in drift and "a1_max" not in drift
+
+    comparisons = {row["label"]: row for row in drift["point_spread_comparisons"]}
+    assert comparisons["within"]["session_shift_exceeds_repetition_spread"] is False
+    assert comparisons["within"]["comparison"] == "within-observed-spread"
+    assert comparisons["equal"]["session_shift_exceeds_repetition_spread"] is False
+    assert comparisons["exceeds"]["session_shift_exceeds_repetition_spread"] is True
+    assert comparisons["exceeds"]["comparison"] == "exceeds-observed-spread"
+    assert comparisons["zero"]["session_shift_exceeds_repetition_spread"] is None
+    assert comparisons["zero"]["comparison"] == "indeterminate-zero-spread"
+    assert comparisons["zero"]["completed_counts"] == [109, 109, 109]
+    assert comparisons["fault"]["session_shift_exceeds_repetition_spread"] is None
+    assert comparisons["fault"]["comparison"] == "not-comparable-no-repetition-spread"
 
 
 def test_brief_contains_in_place_errata_and_revision_record() -> None:
@@ -391,6 +443,82 @@ def test_brief_contains_in_place_errata_and_revision_record() -> None:
     assert "低可用内存，无置换证据" in instructions
     assert "Page Reads/sec" in brief and "永不作为判废依据" in brief
     assert "第五次" in brief
+    assert "第六次" in brief
+    assert "indeterminate-zero-spread" in instructions
+
+
+def test_current_raw_drift_evidence_remains_immutable() -> None:
+    raw_path = (
+        Path(__file__).resolve().parents[1]
+        / "bench-data"
+        / "loadtest-20260917T040248Z"
+        / "raw-results.json"
+    )
+    payload = raw_path.read_bytes()
+    results = json.loads(payload)
+
+    assert hashlib.sha256(payload).hexdigest() == (
+        "e33b5f8609d60435651e4f155eefe91e96db95c2ca284c707cf094f8cbd90c69"
+    )
+    assert results["drift"]["drift_detected"] is True
+    assert any(point.get("session_drift_affected") for point in results["points"])
+
+
+def test_report_records_a2_and_late_backpressure_analysis() -> None:
+    report = (Path(__file__).resolve().parents[1] / "LOADTEST.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "## A2 session-level shift analysis" in report
+    assert "109 / 109 / 109" in report and "111" in report
+    assert "47 ms" in report and "1.9 jobs" in report
+    assert "## Late backpressure analysis" in report
+    assert "multipart" in report and "put_nowait" in report
+    assert "0.237" not in report
+
+
+def test_future_report_renders_count_shift_and_point_spread_comparisons() -> None:
+    raw_path = (
+        Path(__file__).resolve().parents[1]
+        / "bench-data"
+        / "loadtest-20260917T040248Z"
+        / "raw-results.json"
+    )
+    results = json.loads(raw_path.read_text(encoding="utf-8"))
+    a1 = next(
+        point
+        for point in results["points"]
+        if point["sample_count"] == 30_000 and point["concurrency"] == 1
+    )
+    targets = []
+    for point in results["points"]:
+        counts = [int(row["formal"]["n"]) for row in point["repetitions"]]
+        targets.append(
+            {
+                "label": f"n{point['sample_count']}-c{point['concurrency']}",
+                "completed_counts": counts,
+                "window_limited": all(count < 200 for count in counts),
+                "repetition_spread_percent": point["throughput_spread_percent"],
+            }
+        )
+    results["drift"] = compare_drift(
+        [int(row["formal"]["n"]) for row in a1["repetitions"]],
+        int(results["a2"]["formal"]["n"]),
+        targets,
+    )
+    comparisons = {
+        row["label"]: row for row in results["drift"]["point_spread_comparisons"]
+    }
+    for point in results["points"]:
+        label = f"n{point['sample_count']}-c{point['concurrency']}"
+        point["session_shift_comparison"] = comparisons[label]["comparison"]
+
+    report = _report_markdown(results)
+
+    assert "A2 shift vs spread" in report
+    assert "indeterminate-zero-spread" in report
+    assert "within-observed-spread" in report
+    assert "A1 formal completed counts: `[109, 109, 109]`" in report
 
 
 def test_each_repetition_uses_a_fresh_service_process(tmp_path: Path) -> None:

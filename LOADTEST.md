@@ -143,6 +143,22 @@ A2: `{"abort_suite": false, "average_effective_concurrency": 0.8739266666665935,
 
 Drift: `{"a1_max": 21.8, "a1_median": 21.8, "a1_min": 21.799999999999866, "a2": 22.2, "drift_detected": true, "outside_boundary_absolute": 0.3999999999999986, "outside_boundary_percent_of_median": 1.8348623853210944, "signed_change_from_median_percent": 1.8348623853210944}`
 
+## A2 session-level shift analysis
+
+- A1 formal completed counts were `109 / 109 / 109`; A2 completed `111`. Every run used a 300 s formal window after discarding 10 warm-up completions. Each run also drained one successful completion outside the formal window, which was excluded from throughput.
+- A2 end-to-end p50/p95 were `2.656 / 2.719 s`, versus A1 repetition medians `2.703 / 2.766 s`; A1's repetition spread was `0.555% / 1.157%` for those two statistics. Compute p50/p95 fell by approximately 47/46 ms while queue p50/p95 remained `0.078 / 0.079 s`. The observed shift is therefore a small session-level timing change, not only boundary luck. `47 ms × 110 jobs ≈ 5.2 s`; at approximately 2.7 s/job this is about `1.9 jobs`, explaining the two additional A2 completions.
+- The strict A1 min-max decision was over-sensitive because discrete completion counts produced a practically zero-width throughput interval. The historical `drift_detected` and `session-drift-affected` values remain unchanged in `raw-results.json`; they record the rule used during execution, not a finding that the data are unusable.
+- The approximately 1.7% level shift is insufficient evidence of a material machine drift. The report's core conclusions are same-session shapes and ratios: saturation at C=10, overload throughput `45 → 31.5 jobs/min`, and queue time `9.735 / 13.016 ≈ 74.8%` of saturated end-to-end latency. Only absolute jobs/min carries approximately ±1.7% session-level uncertainty, already absorbed by the phrase “about 45 jobs/min.”
+- The shift is smaller than C=20's `3.175%` repetition spread and 360k C=2's `5.556%` spread. The largest timing-point displacement was `52,838,400 B` (about 50.4 MiB), far below 200 MiB, and no repetition was generator-limited.
+
+## Late backpressure analysis
+
+- A queue-full 429 is returned only after multipart parsing, copying the complete 2,751,368-byte request file to staging, reading the complete file through the canonical parser, acquiring the submission lock, running TTL cleanup, creating the manifest and run directory, moving the input, and finally reaching `_pending.put_nowait()`. On `queue.Full`, the newly created run is deleted before the response. All steps after acquiring the submission lock are serialized with real submissions.
+- This session measured only aggregate client-observed 429 wall latency: C=12 p50 was approximately `0.70–0.86 s`; C=20 p50 was approximately `2.70–2.72 s`. It did not instrument stage-specific server cost.
+- From C=10 to C=20, service-parent CPU p50 rose from approximately `32–45%` to approximately `128%`; queue p50 rose from `9.7–10.0 s` to `14.0–14.7 s`; compute p50 rose from `2.59–2.61 s` to `2.89–2.95 s`. Accepted-job effective concurrency remained approximately `9.5` at both points.
+- Effective concurrency begins at the 202 response, so it excludes upload, parsing, and validation work for requests that later receive 429. The evidence for costly rejected work is strong and it is likely the main mechanism behind the overload degradation, but this session cannot divide the `13.5 jobs/min` loss into server waste versus the fixed 500 ms client backoff. A proportional attribution would exceed the evidence.
+- Backpressure is applied too late, making overload more expensive. A production design should perform a capacity check before reading the request body. This is a recorded defect only; this PR does not modify product code.
+
 ## Limitations
 
 - These are laptop session measurements, not production throughput.
