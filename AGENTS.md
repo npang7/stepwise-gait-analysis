@@ -85,26 +85,24 @@
 - Docker and CI validation must perform a real image build and a real container flow covering health, upload, status polling, result retrieval, and artifact download.
   中文：Docker 与 CI 验证必须真实构建镜像并运行容器流程，覆盖健康检查、上传、状态轮询、结果获取和产物下载。
 
-## Evidence and resume claims / 证据与简历陈述
+## Evidence discipline / 证据纪律
 
 - The presence of a workflow file does not prove that CI has run or succeeded.
   中文：workflow 文件存在并不能证明 CI 已运行或成功。
-- Docker, GitHub Actions, and other technical claims require evidence tied to a real commit and a successful workflow run.
+- Docker, GitHub Actions, and other technical statements require evidence tied to a real commit and a successful workflow run.
   中文：Docker、GitHub Actions 及其他技术陈述必须有对应真实提交和成功 workflow 运行的证据。
-- Only after that evidence exists may confirmed claims in the workspace-root `resume_data.yaml` be updated, followed by the required resume rebuild and audit; never place planned or unverified claims in formal materials.
-  中文：只有具备上述证据后，才可更新工作区根目录 `resume_data.yaml` 中的 confirmed 陈述，并按要求重新构建和审计简历；正式材料中绝不能出现 planned 或未经核验的陈述。
-- Do not record dynamic facts such as a current commit SHA, test count, branch state, or application status in repository guidance or durable project claims.
-  中文：不得在仓库指引或长期项目陈述中记录当前提交 SHA、测试数量、分支状态或申请状态等动态事实。
+- Do not record dynamic facts such as a current commit SHA, test count, or branch state in repository guidance or durable project documentation.
+  中文：不得在仓库指引或长期项目文档中记录当前提交 SHA、测试数量或分支状态等动态事实。
 
 ## Privacy and repository hygiene / 隐私与仓库卫生
 
-- This is a private repository, and CI may use only anonymous synthetic fixtures.
-  中文：这是私有仓库，CI 只能使用匿名合成 fixture。
+- CI and benchmarks may use only anonymous synthetic fixtures.
+  中文：CI 与基准测试只能使用匿名合成 fixture。
 - Never commit real participant data, local absolute paths, teammate identities or private details, tokens, secrets, private configuration, or live deployment URLs.
   中文：严禁提交真实参与者数据、本机绝对路径、队友身份或隐私信息、token、secret、私有配置或 live deployment URL。
 - Do not add generated `outputs/`, `uploads/`, or `reports/` directories to Git.
   中文：不得将生成的 `outputs/`、`uploads/` 或 `reports/` 目录加入 Git。
-- Do not write participant, teammate, or other third-party identities or private details into project documentation or generated output, and do not add private identity information discovered in this repository to formal materials; this restriction does not apply to necessary, confirmed resume-owner identity information in the workspace-root `resume_data.yaml`. Keep private repository URLs, current branch SHAs, dynamic test totals, and application statuses out of durable project guidance and claims.
-  中文：不得将参与者、队友或其他第三方的身份或私人资料写入项目文档或生成物，也不得把从本项目仓库发现的私人身份信息新增到正式材料；此限制不适用于工作区根目录 `resume_data.yaml` 中经确认的简历所有者必要身份信息。私有仓库 URL、当前分支 SHA、动态测试总数和申请状态不得写入长期项目指引或陈述。
+- Do not write participant, teammate, or other third-party identities or private details into project documentation or generated output. Keep private repository URLs, current branch SHAs, and dynamic test totals out of durable project guidance.
+  中文：不得将参与者、队友或其他第三方的身份或私人资料写入项目文档或生成物。私有仓库 URL、当前分支 SHA 和动态测试总数不得写入长期项目指引。
 - Before finishing, check the diff for placeholders, secrets, contradictions, unintended files, and unsupported claims.
   中文：完成前必须检查差异中是否存在占位符、秘密、矛盾、意外文件或缺乏证据支持的陈述。

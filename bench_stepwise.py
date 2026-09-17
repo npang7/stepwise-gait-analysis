@@ -8,7 +8,7 @@ Drop this at the repo root and run:
     python bench_stepwise.py --warmup 0       # disable the default discarded warm-up
 
 Writes bench-data/baseline-<date>.json and appends a row to BENCHMARKS.md so every
-number you later put on a resume is traceable to a commit and a machine.
+reported number is traceable to a commit and a machine.
 """
 from __future__ import annotations
 
