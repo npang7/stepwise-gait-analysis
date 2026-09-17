@@ -73,6 +73,12 @@ Start one API service process; analyses still run in separate supervised worker 
 .venv\Scripts\python.exe -m uvicorn stepwise.api:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
 ```
 
+Manifest transitions are serialized by run-striped `threading.RLock` instances owned by the
+single `JobRepository`. These locks coordinate only threads that share that repository instance;
+they do not protect multiple Uvicorn service processes or replicas sharing one data directory.
+Such a deployment requires an interprocess file lock or external coordination and is not
+supported by this filesystem-backed service.
+
 OpenAPI is available at `http://127.0.0.1:8080/docs` and health at `GET /healthz`.
 
 Create an analysis:
