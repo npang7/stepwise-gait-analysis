@@ -13,10 +13,12 @@ import pytest
 from bench.load_test import (
     CalibrationMonitor,
     GiB,
+    MeasurementState,
     MiB,
     ResourceSample,
     UnsafeStoragePath,
     _service_path_budget,
+    _status_poll_retry_allowed,
     calibration_threshold,
     classify_resource_gate,
     compare_drift,
@@ -449,3 +451,20 @@ def test_rejection_evidence_keeps_small_files_and_external_index(tmp_path: Path)
     assert index["external_artifact_root"] == str(external.resolve())
     assert index["files"]["aggregate.json"]["sha256"]
     assert index["files"]["stdout.log"]["sha256"]
+
+
+def test_status_poll_500_is_recorded_and_bounded_without_becoming_fatal() -> None:
+    state = MeasurementState(window_seconds=120.0, target=200)
+    state.status_poll_anomalies.append(
+        {
+            "run_id": "00000000-0000-0000-0000-000000000000",
+            "status_code": 500,
+            "response": "Internal Server Error",
+        }
+    )
+
+    assert _status_poll_retry_allowed(500, 1)
+    assert not _status_poll_retry_allowed(500, 21)
+    assert not _status_poll_retry_allowed(404, 1)
+    assert state.fatal_error is None
+    assert state.status_poll_anomalies[0]["status_code"] == 500

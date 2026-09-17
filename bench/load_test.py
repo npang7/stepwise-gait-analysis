@@ -59,6 +59,7 @@ MATRIX = ((30_000, 1, 300.0), (30_000, 2, 300.0), (30_000, 10, 120.0),
           (30_000, 12, 120.0), (30_000, 20, 120.0), (360_000, 2, 120.0))
 SOURCE_ATTACHMENT_SHA256 = "A8A0D5C6B0B509516421FC18555E09332C7202F20C5D94EF4DBBA2A33E690798"
 MAX_SERVICE_PATH_CHARS = 220
+MAX_TRANSIENT_STATUS_500_PER_JOB = 20
 _PATH_BUDGET_SESSION_ID = "s-12345678"
 _PATH_BUDGET_SCENARIO_ID = "c360-2-3-12345678"
 _PATH_BUDGET_RUN_ID = "00000000-0000-0000-0000-000000000000"
@@ -1303,6 +1304,10 @@ def generator_cpu_statistics(values: list[float]) -> dict[str, Any]:
     }
 
 
+def _status_poll_retry_allowed(status_code: int, anomaly_count: int) -> bool:
+    return status_code == 500 and anomaly_count <= MAX_TRANSIENT_STATUS_500_PER_JOB
+
+
 def classify_resource_gate(samples: list[ResourceSample]) -> dict[str, Any]:
     if not samples:
         return {
@@ -1494,6 +1499,7 @@ class MeasurementState:
         self.measurement_end_s: float | None = None
         self.stop = asyncio.Event()
         self.fatal_error: str | None = None
+        self.status_poll_anomalies: list[dict[str, Any]] = []
 
     def record(self, observation: JobObservation) -> None:
         self.all_jobs.append(observation)
@@ -1909,6 +1915,7 @@ async def _load_client(
         first_running: float | None = None
         terminal_payload: dict[str, Any] | None = None
         terminal_at = accepted_at
+        status_anomaly_count = 0
         while not state.stop.is_set() or terminal_payload is None:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             try:
@@ -1918,6 +1925,22 @@ async def _load_client(
                 return
             observed = time.monotonic()
             if status_response.status_code != 200:
+                status_anomaly_count += 1
+                state.status_poll_anomalies.append(
+                    {
+                        "run_id": run_id,
+                        "client_id": client_id,
+                        "attempt": attempt,
+                        "observed_monotonic_s": observed,
+                        "status_code": status_response.status_code,
+                        "response": status_response.text,
+                        "retry_number_for_job": status_anomaly_count,
+                    }
+                )
+                if _status_poll_retry_allowed(
+                    status_response.status_code, status_anomaly_count
+                ):
+                    continue
                 state.fail(f"status endpoint returned {status_response.status_code} for {run_id}")
                 return
             payload = status_response.json()
@@ -2106,6 +2129,10 @@ def _repetition_summary(
             [row.latency_seconds for row in health_window if row.status_code == 200]
         ),
         "health_errors": [asdict(row) for row in health_window if row.status_code != 200],
+        "status_poll_anomalies": state.status_poll_anomalies,
+        "status_poll_500_count": sum(
+            row["status_code"] == 500 for row in state.status_poll_anomalies
+        ),
         "resources": resource_stats,
         "resource_samples": [asdict(row) for row in resource_window],
         "disk_free_before_bytes": disk_before,
@@ -2630,8 +2657,8 @@ def _report_markdown(results: dict[str, Any]) -> str:
             [
                 f"### {point['sample_count']} samples, C={point['concurrency']}",
                 "",
-                "| repetition | service PID | n | throughput jobs/min | end-to-end | queue | compute | 429 count | 429 latency | effective C | available min bytes | pagefile growth bytes | generator CPU p50/p95/max | citable |",
-                "|---|---:|---:|---:|---|---|---|---:|---|---:|---:|---:|---|---|",
+                "| repetition | service PID | n | throughput jobs/min | end-to-end | queue | compute | 429 count | 429 latency | status-poll 500 | effective C | available min bytes | pagefile growth bytes | generator CPU p50/p95/max | citable |",
+                "|---|---:|---:|---:|---|---|---|---:|---|---:|---:|---:|---:|---|---|",
             ]
         )
         for repetition in point["repetitions"]:
@@ -2666,6 +2693,7 @@ def _report_markdown(results: dict[str, Any]) -> str:
                 f"{formal['n']} | {repetition['throughput_jobs_per_minute']:.6g} | "
                 f"{end_to_end} | {queue} | {compute} | {rejected['count']} | "
                 f"{_format_latency_summary(rejected['latency_seconds'])} | "
+                f"{repetition.get('status_poll_500_count', 0)} | "
                 f"{repetition['average_effective_concurrency']} | "
                 f"{resources.get('available_memory_min_bytes')} | {pagefile_growth} | "
                 f"{generator_cpu_text} | {repetition['citable']} |"
@@ -3113,7 +3141,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         if results.get("correctness_mismatch") is not None:
             return 4
-        if results.get("stopped_reason") is not None:
+        if results.get("stopped_reason") is not None or results.get("abort_reason") is not None:
             return 5
         return 0
     finally:
