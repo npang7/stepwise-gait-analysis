@@ -1,12 +1,52 @@
 from __future__ import annotations
 
+import re
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
+WINDOWS_USER_PROFILE_PATTERN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:\\Users\\[^\\/\s\"']+"
+)
+EMAIL_PATTERN = re.compile(
+    r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+\b"
+)
+SYNTHETIC_EMAIL_DOMAINS = frozenset({"example.com", "example.org", "example.net"})
+
+
+def _privacy_violations(text: str) -> list[str]:
+    violations = [
+        "local Windows user-profile path"
+        for _match in WINDOWS_USER_PROFILE_PATTERN.finditer(text)
+    ]
+    violations.extend(
+        "non-synthetic email address"
+        for match in EMAIL_PATTERN.finditer(text)
+        if match.group(0).rsplit("@", 1)[1].lower() not in SYNTHETIC_EMAIL_DOMAINS
+    )
+    return violations
+
+
+def _synthetic_email(local_part: str, domain: str) -> str:
+    return f"{local_part}{chr(64)}{domain}"
 
 
 class RepositoryHygieneTests(unittest.TestCase):
+    def test_privacy_guard_rejects_synthetic_identity_patterns(self) -> None:
+        local_path = str(
+            PureWindowsPath("C:/", "Users", "fixture-account", "workspace", "source.py")
+        )
+        personal_email = _synthetic_email("fixture.account", "invalid.test")
+
+        self.assertEqual(
+            ["local Windows user-profile path", "non-synthetic email address"],
+            _privacy_violations(f"{local_path}\n{personal_email}"),
+        )
+
+    def test_privacy_guard_allows_reserved_example_email(self) -> None:
+        synthetic_email = _synthetic_email("fixture.account", "example.com")
+        self.assertEqual([], _privacy_violations(synthetic_email))
+
     def test_required_repository_files_exist(self) -> None:
         for name in (
             "README.md",
@@ -111,14 +151,15 @@ class RepositoryHygieneTests(unittest.TestCase):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertEqual(attributes.strip(), "bench-data/** text eol=lf")
 
-    def test_source_files_have_no_teammate_machine_paths(self) -> None:
+    def test_source_files_have_no_local_paths_or_personal_emails(self) -> None:
         candidates = [
             *ROOT.glob("src/**/*.py"),
             *ROOT.glob("stepwise_miniprogram/**/*.js"),
         ]
-        combined = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in candidates)
-        self.assertNotIn("Xiaorui Zhang", combined)
-        self.assertNotIn(r"C:\Users\Xiaorui", combined)
+        for path in candidates:
+            with self.subTest(path=path.relative_to(ROOT)):
+                text = path.read_text(encoding="utf-8", errors="replace")
+                self.assertEqual([], _privacy_violations(text))
 
     def test_worker_logging_does_not_emit_tracebacks_with_local_paths(self) -> None:
         jobs_source = (ROOT / "src" / "stepwise" / "jobs.py").read_text(encoding="utf-8")
