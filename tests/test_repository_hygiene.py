@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS_USER_PROFILE_PATTERN = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:\\Users\\[^\\/\s\"']+"
+    r"(?i)(?<![A-Za-z0-9_])[A-Za-z]:(?:\\+|/)Users(?:\\+|/)[^\\/\s\"']+"
 )
 EMAIL_PATTERN = re.compile(
     r"(?i)\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9-]+(?:\.[A-Z0-9-]+)+\b"
@@ -29,6 +30,17 @@ def _privacy_violations(text: str) -> list[str]:
 
 def _synthetic_email(local_part: str, domain: str) -> str:
     return f"{local_part}{chr(64)}{domain}"
+
+
+def _tracked_repository_files() -> tuple[Path, ...]:
+    output = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    tracked = (ROOT / path.decode("utf-8") for path in output.split(b"\0") if path)
+    return tuple(path for path in tracked if path.is_file())
 
 
 class RepositoryHygieneTests(unittest.TestCase):
@@ -81,7 +93,6 @@ class RepositoryHygieneTests(unittest.TestCase):
             "legacy-prototype/stepwise_reference_pipeline.py",
             "legacy-services/app.py",
             "StepWise_lab_notebook_software_part.tex",
-            "ece445_guidelines_extracted.txt",
         ):
             with self.subTest(name=name):
                 self.assertTrue((archive / name).is_file())
@@ -151,15 +162,18 @@ class RepositoryHygieneTests(unittest.TestCase):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         self.assertEqual(attributes.strip(), "bench-data/** text eol=lf")
 
-    def test_source_files_have_no_local_paths_or_personal_emails(self) -> None:
-        candidates = [
-            *ROOT.glob("src/**/*.py"),
-            *ROOT.glob("stepwise_miniprogram/**/*.js"),
-        ]
+    def test_all_tracked_files_have_no_local_paths_or_personal_emails(self) -> None:
+        candidates = _tracked_repository_files()
+        self.assertIn(ROOT / "tests" / "test_repository_hygiene.py", candidates)
         for path in candidates:
             with self.subTest(path=path.relative_to(ROOT)):
-                text = path.read_text(encoding="utf-8", errors="replace")
-                self.assertEqual([], _privacy_violations(text))
+                text = path.read_bytes().decode("utf-8", errors="replace")
+                violations = _privacy_violations(text)
+                self.assertEqual(
+                    [],
+                    violations,
+                    f"{path.relative_to(ROOT)}: {', '.join(violations)}",
+                )
 
     def test_worker_logging_does_not_emit_tracebacks_with_local_paths(self) -> None:
         jobs_source = (ROOT / "src" / "stepwise" / "jobs.py").read_text(encoding="utf-8")
