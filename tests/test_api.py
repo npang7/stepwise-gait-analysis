@@ -27,7 +27,7 @@ from stepwise.api import (
     _stream_upload,
     create_app,
 )
-from stepwise.jobs import JobManager, SubmissionError
+from stepwise.jobs import JobManager, SubmissionError, _PendingTerminal
 from stepwise.reporting import materialize_processed_csv
 from stepwise.settings import Settings
 from tests.test_jobs import slow_runner, successful_runner
@@ -80,9 +80,160 @@ class ApiTests(unittest.TestCase):
         manager = JobManager(self.data_dir, runner=successful_runner)
         try:
             with TestClient(create_app(self._settings(), manager=manager)) as client:
-                self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
+                health = client.get("/healthz")
+                self.assertEqual(health.status_code, 200)
+                self.assertEqual(
+                    health.json(),
+                    {
+                        "status": "ok",
+                        "terminal_persistence": {
+                            "pending_count": 0,
+                            "oldest_wait_seconds": None,
+                        },
+                    },
+                )
                 self.assertEqual(client.get("/docs").status_code, 200)
-                self.assertIn("/api/v1/analyses", client.get("/openapi.json").json()["paths"])
+                paths = client.get("/openapi.json").json()["paths"]
+                self.assertIn("/api/v1/analyses", paths)
+                health_responses = paths["/healthz"]["get"]["responses"]
+                self.assertIn("503", health_responses)
+                examples = health_responses["503"]["content"]["application/json"]["examples"]
+                self.assertEqual(
+                    set(examples),
+                    {"job_supervisor_unavailable", "terminal_persistence_saturated"},
+                )
+                self.assertEqual(
+                    examples["job_supervisor_unavailable"]["value"]["error"]["code"],
+                    "job_supervisor_unavailable",
+                )
+                post_examples = paths["/api/v1/analyses"]["post"]["responses"]["503"][
+                    "content"
+                ]["application/json"]["examples"]
+                self.assertEqual(set(post_examples), set(examples))
+        finally:
+            manager.close()
+
+    def test_health_reports_supervisor_failure_with_stable_error(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            manager._supervisor_failed.set()
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                response = client.get("/healthz")
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.json(),
+                {
+                    "error": {
+                        "code": "job_supervisor_unavailable",
+                        "message": "The job supervisor is unavailable.",
+                    },
+                    "terminal_persistence": {
+                        "pending_count": 0,
+                        "oldest_wait_seconds": None,
+                    },
+                },
+            )
+        finally:
+            manager.close()
+
+    def test_supervisor_failure_rejects_upload_with_stable_error(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            manager._supervisor_failed.set()
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                response = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json()["error"]["code"], "job_supervisor_unavailable")
+            self.assertEqual(
+                response.json()["terminal_persistence"],
+                {"pending_count": 0, "oldest_wait_seconds": None},
+            )
+            run_directories = [
+                path
+                for path in self.data_dir.iterdir()
+                if path.is_dir() and path.name != ".staging"
+            ]
+            self.assertEqual(run_directories, [])
+        finally:
+            manager.close()
+
+    def test_terminal_persistence_saturation_rejects_then_reopens(self) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+        try:
+            with manager._lock:
+                manager._terminal_pending = {
+                    f"blocked-{index}": _PendingTerminal(
+                        ("succeeded", {"summary": {"job": index}}),
+                        captured_at=time.monotonic() - index,
+                        next_persistence_attempt_at=float("inf"),
+                    )
+                    for index in range(manager.terminal_capacity)
+                }
+            with TestClient(create_app(self._settings(), manager=manager)) as client:
+                health = client.get("/healthz")
+                rejected = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+                self.assertEqual(health.status_code, 503)
+                self.assertEqual(rejected.status_code, 503)
+                self.assertEqual(
+                    rejected.json()["error"]["code"],
+                    "terminal_persistence_saturated",
+                )
+                self.assertEqual(
+                    rejected.json()["terminal_persistence"]["pending_count"],
+                    manager.terminal_capacity,
+                )
+                self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
+
+                with manager._lock:
+                    manager._terminal_pending.pop("blocked-0")
+                self.assertEqual(client.get("/healthz").status_code, 200)
+                accepted = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+                self.assertEqual(accepted.status_code, 202)
+        finally:
+            with manager._lock:
+                for run_id in list(manager._terminal_pending):
+                    if run_id.startswith("blocked-"):
+                        manager._terminal_pending.pop(run_id)
+            manager.close()
+
+    def test_service_becoming_unavailable_during_upload_rejects_and_cleans_staging(
+        self,
+    ) -> None:
+        manager = JobManager(self.data_dir, runner=successful_runner)
+
+        async def fail_after_upload(_upload, destination: Path, _limit: int) -> int:
+            destination.write_bytes(FIXTURE_BYTES)
+            manager._supervisor_failed.set()
+            return len(FIXTURE_BYTES)
+
+        try:
+            with (
+                patch("stepwise.api._stream_upload", side_effect=fail_after_upload),
+                TestClient(create_app(self._settings(), manager=manager)) as client,
+            ):
+                response = client.post(
+                    "/api/v1/analyses",
+                    files={"walking": ("walk.txt", FIXTURE_BYTES, "text/plain")},
+                )
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.json()["error"]["code"], "job_supervisor_unavailable")
+            self.assertEqual(list(manager.repository.staging_dir.iterdir()), [])
+            self.assertEqual(
+                [path for path in self.data_dir.iterdir() if path.name != ".staging"],
+                [],
+            )
         finally:
             manager.close()
 

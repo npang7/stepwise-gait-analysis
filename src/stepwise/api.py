@@ -12,7 +12,17 @@ from typing import Annotated, Any
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from .jobs import JobManager, QueueFullError, SubmissionError
+from .jobs import (
+    SUPERVISOR_UNAVAILABLE_CODE,
+    SUPERVISOR_UNAVAILABLE_MESSAGE,
+    TERMINAL_PERSISTENCE_SATURATED_CODE,
+    TERMINAL_PERSISTENCE_SATURATED_MESSAGE,
+    JobManager,
+    QueueFullError,
+    ServiceAvailability,
+    ServiceUnavailableError,
+    SubmissionError,
+)
 from .models import AnalysisConfig, JobManifest, SensorMapping
 from .reporting import PROCESSED_CSV_NAME, materialize_processed_csv
 from .settings import Settings
@@ -27,6 +37,56 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
         status_code=status_code,
         content={"error": {"code": code, "message": message}},
     )
+
+
+def _terminal_persistence_payload(
+    availability: ServiceAvailability,
+) -> dict[str, int | float | None]:
+    oldest = availability.oldest_wait_seconds
+    return {
+        "pending_count": availability.pending_count,
+        "oldest_wait_seconds": None if oldest is None else round(oldest, 3),
+    }
+
+
+def _unavailable(availability: ServiceAvailability) -> JSONResponse:
+    if availability.available or availability.error_code is None:
+        raise ValueError("unavailable response requires an unavailable snapshot")
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": availability.error_code,
+                "message": availability.error_message,
+            },
+            "terminal_persistence": _terminal_persistence_payload(availability),
+        },
+    )
+
+
+def _unavailable_examples() -> dict[str, dict[str, Any]]:
+    def example(code: str, message: str) -> dict[str, Any]:
+        return {
+            "summary": message,
+            "value": {
+                "error": {"code": code, "message": message},
+                "terminal_persistence": {
+                    "pending_count": 0,
+                    "oldest_wait_seconds": None,
+                },
+            },
+        }
+
+    return {
+        SUPERVISOR_UNAVAILABLE_CODE: example(
+            SUPERVISOR_UNAVAILABLE_CODE,
+            SUPERVISOR_UNAVAILABLE_MESSAGE,
+        ),
+        TERMINAL_PERSISTENCE_SATURATED_CODE: example(
+            TERMINAL_PERSISTENCE_SATURATED_CODE,
+            TERMINAL_PERSISTENCE_SATURATED_MESSAGE,
+        ),
+    }
 
 
 def _status_payload(manifest: JobManifest) -> dict[str, Any]:
@@ -124,16 +184,49 @@ def create_app(
     app.state.job_manager = job_manager
     app.state.settings = resolved_settings
 
-    @app.get("/healthz")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    @app.get(
+        "/healthz",
+        response_model=dict[str, Any],
+        responses={
+            503: {
+                "description": "The service cannot accept or supervise new work.",
+                "content": {
+                    "application/json": {"examples": _unavailable_examples()}
+                },
+            }
+        },
+    )
 
-    @app.post("/api/v1/analyses", status_code=202)
+
+    def health() -> dict[str, Any] | JSONResponse:
+        availability = job_manager.availability_snapshot()
+        if not availability.available:
+            return _unavailable(availability)
+        return {
+            "status": "ok",
+            "terminal_persistence": _terminal_persistence_payload(availability),
+        }
+
+    @app.post(
+        "/api/v1/analyses",
+        status_code=202,
+        responses={
+            503: {
+                "description": "The service cannot accept or supervise new work.",
+                "content": {
+                    "application/json": {"examples": _unavailable_examples()}
+                },
+            }
+        },
+    )
     async def create_analysis(
         walking: Annotated[UploadFile, File()],
         standing: Annotated[UploadFile | None, File()] = None,
         sensor_mapping: Annotated[str, Form()] = "{}",
     ) -> JSONResponse:
+        availability = job_manager.availability_snapshot()
+        if not availability.available:
+            return _unavailable(availability)
         try:
             config = _parse_config(sensor_mapping)
         except (TypeError, ValueError) as exc:
@@ -158,6 +251,8 @@ def create_app(
             return _error(status_code, exc.code, exc.message)
         except QueueFullError:
             return _error(429, "queue_full", "The analysis queue is full; retry later.")
+        except ServiceUnavailableError as exc:
+            return _unavailable(exc.availability)
         finally:
             await asyncio.to_thread(job_manager.repository.remove_staged, walking_path)
             if standing_path is not None:
