@@ -7,19 +7,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryHygieneTests(unittest.TestCase):
-    def test_resume_ready_repository_files_exist(self) -> None:
+    def test_required_repository_files_exist(self) -> None:
         for name in (
             "README.md",
             "pyproject.toml",
             "Dockerfile",
             ".dockerignore",
+            ".gitattributes",
             ".gitignore",
             "package.json",
-            "docs/INTERVIEW_GUIDE_PRIVATE.md",
             ".github/workflows/ci.yml",
         ):
             with self.subTest(name=name):
                 self.assertTrue((ROOT / name).is_file())
+
+        self.assertFalse((ROOT / "docs" / "INTERVIEW_GUIDE_PRIVATE.md").exists())
 
     def test_deployment_uses_canonical_analysis_sources(self) -> None:
         self.assertFalse((ROOT / "app.py").exists())
@@ -74,6 +76,40 @@ class RepositoryHygieneTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("python -m stepwise.ci_smoke", readme)
         self.assertIn("health, upload, polling, result, and artifact download", readme)
+
+    def test_readme_documents_api_contract_and_evidence_commands(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for token in (
+            "POST /api/v1/analyses",
+            "GET /api/v1/analyses/{run_id}",
+            "GET /api/v1/analyses/{run_id}/result",
+            "GET /api/v1/analyses/{run_id}/artifacts/{name}",
+            "GET /healthz",
+            "upload_too_large",
+            "invalid_mapping",
+            "empty_input",
+            "binary_input",
+            "invalid_encoding",
+            "no_data_rows",
+            "invalid_timestamp",
+            "queue_full",
+            "result_not_ready",
+            "analysis_not_found",
+            "artifact_not_found",
+            "job_supervisor_unavailable",
+            "terminal_persistence_saturated",
+            "artifact_generation_failed",
+            "python -m bench.readme_metrics aba",
+            "python -m bench.readme_metrics memory",
+            "python -m bench.readme_metrics upload",
+            "python -m bench.readme_metrics load",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, readme)
+
+    def test_benchmark_evidence_is_declared_lf_text(self) -> None:
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        self.assertEqual(attributes.strip(), "bench-data/** text eol=lf")
 
     def test_source_files_have_no_teammate_machine_paths(self) -> None:
         candidates = [

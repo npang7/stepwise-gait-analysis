@@ -1,6 +1,6 @@
 # StepWise Backend Hardening — Implementation Brief
 
-Audience: an AI coding agent working in the `stepwise-gait-analysis` repository.
+Audience: an implementer working in the `stepwise-gait-analysis` repository.
 This brief supplements `AGENTS.md`. Where this brief is more specific, it wins; every
 other rule in `AGENTS.md` still applies in full.
 
@@ -228,7 +228,7 @@ restarted worker's lease simply expires and another worker reclaims the row.
 `recover_incomplete()`'s fail-everything behaviour is **removed**, not modified.
 
 ### 6.3 Idempotency — required, not optional
-Lease expiry means a job can legitimately execute more than once. The resume claim is
+Lease expiry means a job can legitimately execute more than once. The guarantee to state is
 "zero duplicate **committed results**", and that requires a mechanism:
 
 - the result is a single row keyed by `run_id`, so re-execution overwrites rather than
@@ -282,8 +282,6 @@ Per `AGENTS.md`, restated because it is the easiest rule to breach while writing
 - A workflow file existing does not mean CI ran. A test existing does not mean it passed.
 - No performance number without a committed benchmark row behind it.
 - No "production", "at scale", "users", or clinical language anywhere.
-- Do not edit `resume_data.yaml`. Confirmed claims are the owner's to record, only after
-  evidence exists.
 - If a phase is partially done, say so plainly in the PR rather than rounding up.
 
 ---
