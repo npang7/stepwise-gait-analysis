@@ -173,6 +173,7 @@ class JobManager:
         self._lock = threading.RLock()
         self._submission_lock = threading.Lock()
         self._stop = threading.Event()
+        self._supervisor_failure_pending = threading.Event()
         self._supervisor_failed = threading.Event()
         self.repository.cleanup_staging()
         self.repository.recover_incomplete()
@@ -205,7 +206,12 @@ class JobManager:
             )
             saturated = len(self._active) + pending_count >= self.terminal_capacity
         oldest_wait = None if oldest is None else max(0.0, now - oldest)
-        if self._stop.is_set() or self._supervisor_failed.is_set() or not self._thread.is_alive():
+        if (
+            self._stop.is_set()
+            or self._supervisor_failure_pending.is_set()
+            or self._supervisor_failed.is_set()
+            or not self._thread.is_alive()
+        ):
             return ServiceAvailability(
                 False,
                 SUPERVISOR_UNAVAILABLE_CODE,
@@ -557,8 +563,10 @@ class JobManager:
                 self._start_pending()
                 self._stop.wait(0.02)
         except Exception as exc:  # noqa: BLE001 -- supervisor boundary must become observable.
-            # Serialize failure publication with admission. At most the request that
-            # linearized before this lock can still be accepted.
+            # Publish intent before waiting for the admission lock. Otherwise Python's
+            # non-fair Lock could let multiple submitters overtake this waiter. A request
+            # already holding the lock may finish; all later admission snapshots fail.
+            self._supervisor_failure_pending.set()
             with self._submission_lock:
                 self._supervisor_failed.set()
             LOGGER.error(

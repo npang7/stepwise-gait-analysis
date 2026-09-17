@@ -20,6 +20,7 @@ from stepwise.jobs import (
     TERMINAL_PERSISTENCE_SATURATED_CODE,
     JobManager,
     QueueFullError,
+    ServiceUnavailableError,
     _ActiveJob,
     _PendingTerminal,
 )
@@ -256,6 +257,7 @@ class JobManagerTests(unittest.TestCase):
         manager._start_failures = 0
         manager._next_start_attempt_at = 0.0
         manager._stop = threading.Event()
+        manager._supervisor_failure_pending = threading.Event()
         manager._supervisor_failed = threading.Event()
         manager._thread = StubSupervisorThread()  # type: ignore[assignment]
         return manager
@@ -275,6 +277,22 @@ class JobManagerTests(unittest.TestCase):
         supervisor_thread.join()
         supervisor_thread.join()
         self.assertFalse(manager.supervisor_available)
+
+    def test_supervisor_failure_intent_blocks_submitters_waiting_for_admission(self) -> None:
+        manager = self.manager_with_active_jobs(FlakyRepository(), {})
+        manager._submission_lock.acquire()
+        try:
+            manager._supervisor_failure_pending.set()
+            self.assertFalse(manager.availability_snapshot().available)
+            staged = self.root / "staged.txt"
+            staged.write_bytes(FIXTURE_BYTES)
+
+            with self.assertRaises(ServiceUnavailableError) as raised:
+                manager.submit_staged(staged, None, AnalysisConfig())
+
+            self.assertEqual(raised.exception.availability.error_code, "job_supervisor_unavailable")
+        finally:
+            manager._submission_lock.release()
 
     def test_terminal_success_is_cached_until_persisted_while_other_job_finishes(self) -> None:
         first_payload = {"summary": {"job": "first"}}
