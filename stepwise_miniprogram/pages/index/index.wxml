@@ -1,0 +1,45 @@
+<view class="page">
+  <view class="hero">
+    <view class="eyebrow">STEPWISE GAIT SCREENING</view>
+    <view class="title">Foot-pressure and IMU analysis for your walking trial</view>
+    <view class="subtitle">Upload TXT data, run the cloud analyzer, and get a readable posture-risk report with evidence notes.</view>
+    <navigator class="button" url="/pages/upload/upload">Start Analysis</navigator>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Quick Access</view>
+    <view class="nav-list">
+      <navigator class="nav-item tap" url="/pages/education/education">
+        <view>
+          <view class="nav-main">Education Center</view>
+          <text class="nav-sub">Understand each StepWise risk rule and evidence source.</text>
+        </view>
+        <text class="chevron">›</text>
+      </navigator>
+      <navigator class="nav-item tap" url="/pages/guide/guide">
+        <view>
+          <view class="nav-main">Collection Guide</view>
+          <text class="nav-sub">Check standing calibration, walking trial, and sensor mapping.</text>
+        </view>
+        <text class="chevron">›</text>
+      </navigator>
+      <navigator class="nav-item tap" url="/pages/history/history">
+        <view>
+          <view class="nav-main">History</view>
+          <text class="nav-sub">Reopen recent analysis results stored on this phone.</text>
+        </view>
+        <text class="chevron">›</text>
+      </navigator>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Current Prototype</view>
+    <view class="pill">Left foot</view>
+    <view class="pill">P1 lateral forefoot</view>
+    <view class="pill">P2 heel</view>
+    <view class="pill">P3 arch</view>
+    <view class="pill">P4 medial forefoot</view>
+    <view class="small">You can change this mapping on the upload page before running analysis.</view>
+  </view>
+</view>

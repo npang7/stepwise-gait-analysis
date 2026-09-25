@@ -1,0 +1,62 @@
+<view class="page">
+  <view class="hero">
+    <view class="eyebrow">SCREENING OUTCOME</view>
+    <view class="title">{{topResult}}</view>
+    <view class="subtitle" wx:if="{{generatedAt}}">Generated at {{generatedAt}}</view>
+    <view class="badge">{{topLevel}}</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Key Signals</view>
+    <view class="metric-grid">
+      <view class="metric">
+        <text class="metric-label">Data quality</text>
+        <text class="metric-value">{{summary.data_quality || '-'}}</text>
+      </view>
+      <view class="metric">
+        <text class="metric-label">Stance phases</text>
+        <text class="metric-value">{{summary.detected_steps_single_foot || '-'}}</text>
+      </view>
+      <view class="metric">
+        <text class="metric-label">Sample rate</text>
+        <text class="metric-value">{{sampleRate}} Hz</text>
+      </view>
+      <view class="metric">
+        <text class="metric-label">PitchDelta</text>
+        <text class="metric-value">{{pitchDelta}} deg</text>
+      </view>
+      <view class="metric">
+        <text class="metric-label">Landing angle</text>
+        <text class="metric-value">{{landingAngle}} deg</text>
+      </view>
+      <view class="metric">
+        <text class="metric-label">ArchRatio</text>
+        <text class="metric-value">{{archRatio}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">User Report Links</view>
+    <view class="subtitle">Copy a cloud report link for browser viewing, sharing, or presentation.</view>
+    <button class="button" data-key="user_report" bindtap="copyUrl">Copy User Report</button>
+    <button class="button secondary" data-key="data_guide" bindtap="copyUrl">Copy Data Guide</button>
+    <button class="button quiet" data-key="technical_report" bindtap="copyUrl">Copy Technical Report</button>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">Risk Cards</view>
+    <block wx:for="{{cards}}" wx:key="title">
+      <view class="risk-card tap">
+        <view class="row">
+          <view class="badge warn">{{item.level}}</view>
+        </view>
+        <view class="risk-title">{{item.title}}</view>
+        <view class="risk-text">What this suggests: {{item.interpretation}}</view>
+        <view class="risk-text">Evidence: {{item.evidence}}</view>
+        <view class="risk-text">Next step: {{item.action}}</view>
+        <button class="button secondary" data-id="{{item.educationId}}" bindtap="learnMore">Learn Why</button>
+      </view>
+    </block>
+  </view>
+</view>

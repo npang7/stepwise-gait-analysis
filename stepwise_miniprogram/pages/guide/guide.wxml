@@ -1,0 +1,29 @@
+<view class="page">
+  <view class="hero light">
+    <view class="eyebrow">BEFORE UPLOAD</view>
+    <view class="title">Collection Guide</view>
+    <view class="subtitle">A stable collection routine makes the report easier to trust and easier to explain during the demo.</view>
+  </view>
+
+  <view class="panel">
+    <view class="timeline-item">
+      <view class="nav-main">Confirm sensor mapping</view>
+      <view class="nav-sub">Current prototype: P1 little-toe side, P2 heel, P3 arch, P4 big-toe side. The insole is mounted on the left foot.</view>
+    </view>
+
+    <view class="timeline-item">
+      <view class="nav-main">Record standing calibration</view>
+      <view class="nav-sub">Stand still for several seconds and save standing.txt. This provides Pitch0 and Roll0 instead of treating raw IMU zero as anatomical zero.</view>
+    </view>
+
+    <view class="timeline-item">
+      <view class="nav-main">Record walking trial</view>
+      <view class="nav-sub">Walk naturally and collect 10-20 valid stance phases. Keep the insole fixed and avoid sudden turns during the trial.</view>
+    </view>
+
+    <view class="timeline-item last">
+      <view class="nav-main">Upload both TXT files</view>
+      <view class="nav-sub">Upload walking.txt as the main file and standing.txt as calibration. Missing calibration makes PitchDelta and landing angle less reliable.</view>
+    </view>
+  </view>
+</view>

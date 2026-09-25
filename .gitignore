@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+.venv/
+.worktrees/
+.env
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.egg-info/
+
+# User-specific configuration and uploaded recordings
+stepwise_miniprogram/project.private.config.json
+miniapp_uploads/
+stepwise-data/
+
+# Generated reports, exports, and previews
+miniapp_reports/
+stepwise_output/
+stepwise_newdata_output/
+stepwise_cli_reports/
+stepwise_batch_reports/
+stepwise_new_mapping_reports/
+stepwise_20*/
+stepwise_reference_experiment*/
+stepwise_report_polished_preview/
+stepwise_multi_command_test/
+experiment2_report/
+tmp*/
+presentation_assets/
+*.pdf
+*.zip
+*.docx
+miniapp_test_result*.html
+
+# Benchmark inputs and generated artifacts (aggregate evidence remains tracked)
+bench-data/walk_*.txt
+bench-data/artifacts_*/
+bench-data/compare/
+bench-data/loadtest-work/

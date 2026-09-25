@@ -1,0 +1,45 @@
+{"event": "storage_root_selected", "path_budget": {"candidate_lengths": {"run_artifact": 120, "staged_upload": 99}, "limit_chars": 220, "longest_kind": "run_artifact", "longest_path": "<WORK_ROOT>\\s-12345678\\c360-2-3-12345678\\data\\00000000-0000-0000-0000-000000000000\\artifacts\\reference_screening_result.json", "max_chars": 120, "passed": true}, "rejected_root": "<REJECTED_ROOT>", "session_work_root": "<WORK_ROOT>\\s-09807ebb", "timestamp": "2026-09-17T04:02:48.930154+00:00", "work_root": "<WORK_ROOT>"}
+{"event": "memory_calibration_end", "generator_upload_increment_peak_bytes": 3596288, "parent_peak_rss_bytes": 178061312, "passed": true, "sample_count": 30000, "timestamp": "2026-09-17T04:02:56.798681+00:00", "worker_peak_rss_bytes": 195293184}
+{"event": "memory_calibration_end", "generator_upload_increment_peak_bytes": 34222080, "parent_peak_rss_bytes": 511954944, "passed": true, "sample_count": 360000, "timestamp": "2026-09-17T04:03:10.607514+00:00", "worker_peak_rss_bytes": 689700864}
+{"concurrency": 1, "disk_free_bytes": 248323887104, "event": "repetition_start", "label": "n30000-c1-r1", "sample_count": 30000, "timestamp": "2026-09-17T04:03:12.671251+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 109, "label": "n30000-c1-r1", "pid": 2348, "throughput_jobs_per_minute": 21.799999999999866, "timestamp": "2026-09-17T04:08:47.888471+00:00"}
+{"concurrency": 1, "disk_free_bytes": 247158427648, "event": "repetition_start", "label": "n30000-c1-r2", "sample_count": 30000, "timestamp": "2026-09-17T04:08:47.918022+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 109, "label": "n30000-c1-r2", "pid": 2356, "throughput_jobs_per_minute": 21.8, "timestamp": "2026-09-17T04:14:19.802253+00:00"}
+{"concurrency": 1, "disk_free_bytes": 245775462400, "event": "repetition_start", "label": "n30000-c1-r3", "sample_count": 30000, "timestamp": "2026-09-17T04:14:19.844327+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 109, "label": "n30000-c1-r3", "pid": 27576, "throughput_jobs_per_minute": 21.8, "timestamp": "2026-09-17T04:19:50.581552+00:00"}
+{"concurrency": 2, "disk_free_bytes": 247855140864, "event": "repetition_start", "label": "n30000-c2-r1", "sample_count": 30000, "timestamp": "2026-09-17T04:19:51.492757+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 200, "label": "n30000-c2-r1", "pid": 14800, "throughput_jobs_per_minute": 40.35743232563057, "timestamp": "2026-09-17T04:25:08.318427+00:00"}
+{"concurrency": 2, "disk_free_bytes": 245344137216, "event": "repetition_start", "label": "n30000-c2-r2", "sample_count": 30000, "timestamp": "2026-09-17T04:25:08.389081+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 200, "label": "n30000-c2-r2", "pid": 25028, "throughput_jobs_per_minute": 40.42541006525374, "timestamp": "2026-09-17T04:30:24.049008+00:00"}
+{"concurrency": 2, "disk_free_bytes": 242831056896, "event": "repetition_start", "label": "n30000-c2-r3", "sample_count": 30000, "timestamp": "2026-09-17T04:30:24.138550+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 200, "label": "n30000-c2-r3", "pid": 29444, "throughput_jobs_per_minute": 40.0, "timestamp": "2026-09-17T04:35:41.680392+00:00"}
+{"concurrency": 10, "disk_free_bytes": 246905782272, "event": "repetition_start", "label": "n30000-c10-r1", "sample_count": 30000, "timestamp": "2026-09-17T04:35:43.387360+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 90, "label": "n30000-c10-r1", "pid": 20124, "throughput_jobs_per_minute": 45.0, "timestamp": "2026-09-17T04:38:11.350054+00:00"}
+{"concurrency": 10, "disk_free_bytes": 245847269376, "event": "repetition_start", "label": "n30000-c10-r2", "sample_count": 30000, "timestamp": "2026-09-17T04:38:11.467568+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 90, "label": "n30000-c10-r2", "pid": 26228, "throughput_jobs_per_minute": 45.0, "timestamp": "2026-09-17T04:40:40.371510+00:00"}
+{"concurrency": 10, "disk_free_bytes": 244546342912, "event": "repetition_start", "label": "n30000-c10-r3", "sample_count": 30000, "timestamp": "2026-09-17T04:40:40.499755+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 92, "label": "n30000-c10-r3", "pid": 14132, "throughput_jobs_per_minute": 46.0, "timestamp": "2026-09-17T04:43:10.608844+00:00"}
+{"concurrency": 12, "disk_free_bytes": 246666350592, "event": "repetition_start", "label": "n30000-c12-r1", "sample_count": 30000, "timestamp": "2026-09-17T04:43:11.643171+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 88, "label": "n30000-c12-r1", "pid": 22652, "throughput_jobs_per_minute": 44.0, "timestamp": "2026-09-17T04:45:41.510536+00:00"}
+{"concurrency": 12, "disk_free_bytes": 245623193600, "event": "repetition_start", "label": "n30000-c12-r2", "sample_count": 30000, "timestamp": "2026-09-17T04:45:41.669611+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 88, "label": "n30000-c12-r2", "pid": 17244, "throughput_jobs_per_minute": 44.0, "timestamp": "2026-09-17T04:48:10.960648+00:00"}
+{"concurrency": 12, "disk_free_bytes": 244341792768, "event": "repetition_start", "label": "n30000-c12-r3", "sample_count": 30000, "timestamp": "2026-09-17T04:48:11.105124+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 87, "label": "n30000-c12-r3", "pid": 26080, "throughput_jobs_per_minute": 43.5, "timestamp": "2026-09-17T04:50:47.513045+00:00"}
+{"concurrency": 20, "disk_free_bytes": 246423670784, "event": "repetition_start", "label": "n30000-c20-r1", "sample_count": 30000, "timestamp": "2026-09-17T04:50:48.658497+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 63, "label": "n30000-c20-r1", "pid": 27288, "throughput_jobs_per_minute": 31.5, "timestamp": "2026-09-17T04:53:24.303032+00:00"}
+{"concurrency": 20, "disk_free_bytes": 245625950208, "event": "repetition_start", "label": "n30000-c20-r2", "sample_count": 30000, "timestamp": "2026-09-17T04:53:24.478460+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 62, "label": "n30000-c20-r2", "pid": 25796, "throughput_jobs_per_minute": 31.000000000000004, "timestamp": "2026-09-17T04:56:02.719879+00:00"}
+{"concurrency": 20, "disk_free_bytes": 244820783104, "event": "repetition_start", "label": "n30000-c20-r3", "sample_count": 30000, "timestamp": "2026-09-17T04:56:02.894930+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 64, "label": "n30000-c20-r3", "pid": 30280, "throughput_jobs_per_minute": 32.0, "timestamp": "2026-09-17T04:58:39.559497+00:00"}
+{"concurrency": 2, "disk_free_bytes": 246420738048, "event": "repetition_start", "label": "n360000-c2-r1", "sample_count": 360000, "timestamp": "2026-09-17T04:58:40.607155+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 18, "label": "n360000-c2-r1", "pid": 14820, "throughput_jobs_per_minute": 9.0, "timestamp": "2026-09-17T05:01:55.116169+00:00"}
+{"concurrency": 2, "disk_free_bytes": 242861178880, "event": "repetition_start", "label": "n360000-c2-r2", "sample_count": 360000, "timestamp": "2026-09-17T05:01:55.316913+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 18, "label": "n360000-c2-r2", "pid": 7400, "throughput_jobs_per_minute": 9.0, "timestamp": "2026-09-17T05:05:15.639552+00:00"}
+{"concurrency": 2, "disk_free_bytes": 239773016064, "event": "repetition_start", "label": "n360000-c2-r3", "sample_count": 360000, "timestamp": "2026-09-17T05:05:15.847197+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 19, "label": "n360000-c2-r3", "pid": 27848, "throughput_jobs_per_minute": 9.5, "timestamp": "2026-09-17T05:08:40.491070+00:00"}
+{"event": "contract_faults_end", "passed": true, "timestamp": "2026-09-17T05:08:46.305011+00:00"}
+{"event": "timeout_fault_end", "passed": true, "timestamp": "2026-09-17T05:10:48.897091+00:00"}
+{"event": "ttl_fault_end", "expected_404": 19, "passed": true, "timestamp": "2026-09-17T05:12:53.258057+00:00"}
+{"concurrency": 1, "disk_free_bytes": 245709037568, "event": "repetition_start", "label": "a2-n30000-c1", "sample_count": 30000, "timestamp": "2026-09-17T05:12:53.260057+00:00"}
+{"citable": true, "event": "repetition_end", "exit_code": 3, "formal_n": 111, "label": "a2-n30000-c1", "pid": 29840, "throughput_jobs_per_minute": 22.2, "timestamp": "2026-09-17T05:18:22.865078+00:00"}
+{"completed": true, "event": "suite_end", "output_dir": "<REPOSITORY_ROOT>\\bench-data\\loadtest-20260917T040248Z", "timestamp": "2026-09-17T05:18:23.414201+00:00"}

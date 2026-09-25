@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-09-15T00:59:51Z",
+  "code_commit": "6067e55",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.11.7",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3"
+  },
+  "recording": {
+    "generator": "bench_stepwise.generate",
+    "samples": 713650,
+    "file_bytes": 67108864,
+    "limit_bytes": 67108864,
+    "note": "The generated text was padded with trailing whitespace to exercise the exact byte cap without changing parsed rows."
+  },
+  "api_peak_rss": {
+    "method": "Windows Get-Process PeakWorkingSet64 for the PID listening on the test port",
+    "before": {
+      "source_commit": "af2c3da",
+      "startup_rss_bytes": 120836096,
+      "peak_rss_bytes": 1520078848,
+      "submit_seconds": 9.489853,
+      "http_status": 202
+    },
+    "after": {
+      "source_commit": "6067e55",
+      "startup_rss_bytes": 121085952,
+      "peak_rss_bytes": 1520410624,
+      "submit_seconds": 6.616678,
+      "http_status": 202
+    },
+    "interpretation": "Peak RSS was effectively unchanged; canonical pandas validation remains the dominant allocation even though the upload is no longer retained as one request-sized bytes object."
+  },
+  "maximum_size_analysis": {
+    "source_commit": "6067e55",
+    "timeout_seconds": 120,
+    "submit_seconds": 6.3916,
+    "worker_to_terminal_seconds": 45.6876,
+    "terminal_status": "succeeded"
+  }
+}
