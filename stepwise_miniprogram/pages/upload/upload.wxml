@@ -1,0 +1,73 @@
+<view class="page">
+  <view class="hero light">
+    <view class="eyebrow">DATA UPLOAD</view>
+    <view class="title">Run a walking analysis</view>
+    <view class="subtitle">Select one walking TXT file and one standing calibration TXT file. The calibration file helps convert raw Pitch and Roll into meaningful deltas.</view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">1. Select Files</view>
+    <view class="file-box">
+      <view class="metric-label">Walking trial</view>
+      <view class="metric-value">{{walkingName || 'No walking file selected'}}</view>
+      <text class="file-status" wx:if="{{walkingName}}">Ready for analysis</text>
+      <button class="button secondary" bindtap="chooseWalking">Choose Walking TXT</button>
+    </view>
+
+    <view class="file-box">
+      <view class="metric-label">Standing calibration</view>
+      <view class="metric-value">{{standingName || 'No standing file selected'}}</view>
+      <text class="file-status" wx:if="{{standingName}}">Calibration loaded</text>
+      <button class="button secondary" bindtap="chooseStanding">Choose Standing TXT</button>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">2. Confirm Sensor Mapping</view>
+    <view class="subtitle">Use the default mapping for the current left-foot prototype.</view>
+
+    <view class="metric-grid">
+      <view class="metric">
+        <text class="metric-label">Heel</text>
+        <picker mode="selector" range="{{channels}}" value="{{heelIndex}}" data-key="heel" bindchange="changeMapping">
+          <text class="metric-value">{{mapping.heel}}</text>
+        </picker>
+      </view>
+
+      <view class="metric">
+        <text class="metric-label">Arch / midfoot</text>
+        <picker mode="selector" range="{{channels}}" value="{{archIndex}}" data-key="arch" bindchange="changeMapping">
+          <text class="metric-value">{{mapping.arch}}</text>
+        </picker>
+      </view>
+
+      <view class="metric">
+        <text class="metric-label">Big-toe side</text>
+        <picker mode="selector" range="{{channels}}" value="{{medialForefootIndex}}" data-key="medialForefoot" bindchange="changeMapping">
+          <text class="metric-value">{{mapping.medialForefoot}}</text>
+        </picker>
+      </view>
+
+      <view class="metric">
+        <text class="metric-label">Little-toe side</text>
+        <picker mode="selector" range="{{channels}}" value="{{lateralForefootIndex}}" data-key="lateralForefoot" bindchange="changeMapping">
+          <text class="metric-value">{{mapping.lateralForefoot}}</text>
+        </picker>
+      </view>
+
+      <view class="metric full">
+        <text class="metric-label">Pitch direction for eversion</text>
+        <picker mode="selector" range="{{signs}}" value="{{pitchSignIndex}}" bindchange="changePitchSign">
+          <text class="metric-value">{{pitchEversionSign}}</text>
+        </picker>
+      </view>
+    </view>
+  </view>
+
+  <view class="panel">
+    <view class="section-title">3. Analyze</view>
+    <button class="button" loading="{{loading}}" bindtap="analyze">Analyze Walking Trial</button>
+    <view class="divider"></view>
+    <view class="small">For developer-tool testing, keep domain/TLS validation disabled in local settings. On a real Mini Program release, configure the legal request domain in WeChat management.</view>
+  </view>
+</view>

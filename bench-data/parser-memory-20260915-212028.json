@@ -1,0 +1,41 @@
+{
+  "timestamp": "2026-09-15T21:21:02.412626+00:00",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "python": "3.11.7",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3"
+  },
+  "recording": {
+    "generator": "bench_stepwise.generate",
+    "samples": 713650,
+    "file_bytes": 67108864,
+    "limit_bytes": 67108864,
+    "note": "The generated text was padded with trailing whitespace to exercise the exact byte cap without changing parsed rows."
+  },
+  "api_peak_rss": {
+    "method": "Windows Get-Process PeakWorkingSet64 for the PID listening on the test port; fresh API process for each commit",
+    "before": {
+      "source_commit": "33faa78",
+      "method": "Windows Get-Process PeakWorkingSet64 for the PID listening on the test port",
+      "startup_working_set_bytes": 121192448,
+      "startup_peak_working_set_bytes": 121192448,
+      "peak_working_set_bytes": 1520627712,
+      "submit_seconds": 6.4192924,
+      "http_status": 202
+    },
+    "after": {
+      "source_commit": "5af25b5",
+      "method": "Windows Get-Process PeakWorkingSet64 for the PID listening on the test port",
+      "startup_working_set_bytes": 121208832,
+      "startup_peak_working_set_bytes": 121208832,
+      "peak_working_set_bytes": 898891776,
+      "submit_seconds": 6.2374541,
+      "http_status": 202
+    },
+    "delta_bytes": -621735936,
+    "percent_change": -40.886795044808444,
+    "interpretation": "The lower API peak is attributable to the section 5.3 parser change; Phase 1 streaming was present in both commits."
+  }
+}
