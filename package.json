@@ -1,0 +1,7 @@
+{
+  "name": "stepwise-mini-program-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/js/*.test.js"
+  }
+}
