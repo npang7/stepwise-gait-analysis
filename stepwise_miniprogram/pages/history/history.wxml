@@ -1,0 +1,24 @@
+<view class="page">
+  <view class="hero light">
+    <view class="eyebrow">LOCAL RECORDS</view>
+    <view class="title">Analysis History</view>
+    <view class="subtitle">Recent results saved on this phone after successful analysis.</view>
+    <button class="button secondary" bindtap="clearAll" wx:if="{{history.length}}">Clear History</button>
+  </view>
+
+  <view class="panel" wx:if="{{!history.length}}">
+    <view class="section-title">No saved result yet</view>
+    <view class="small">Run one walking TXT analysis first, then the result will appear here.</view>
+  </view>
+
+  <block wx:for="{{history}}" wx:key="id">
+    <view class="history-item tap" bindtap="openResult" data-id="{{item.id}}">
+      <view class="row">
+        <view class="small">{{item.createdAt}}</view>
+        <view class="badge">{{item.topLevel}}</view>
+      </view>
+      <view class="history-title">{{item.topResult}}</view>
+      <view class="small">Tap to reopen the report summary and links.</view>
+    </view>
+  </block>
+</view>

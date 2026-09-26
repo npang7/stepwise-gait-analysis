@@ -1,0 +1,15 @@
+.history-item {
+  background: #ffffff;
+  border: 1rpx solid #d9e3ea;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 18rpx;
+}
+
+.history-title {
+  color: #10202b;
+  font-size: 31rpx;
+  line-height: 1.25;
+  font-weight: 900;
+  margin: 18rpx 0 8rpx;
+}

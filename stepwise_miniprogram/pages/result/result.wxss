@@ -1,0 +1,22 @@
+.risk-card {
+  border: 1rpx solid #d9e3ea;
+  border-radius: 14rpx;
+  padding: 24rpx;
+  margin-bottom: 18rpx;
+  background: #fbfdff;
+}
+
+.risk-title {
+  color: #10202b;
+  font-size: 32rpx;
+  line-height: 1.25;
+  font-weight: 900;
+  margin: 18rpx 0 12rpx;
+}
+
+.risk-text {
+  color: #5f707c;
+  font-size: 24rpx;
+  line-height: 1.55;
+  margin-top: 10rpx;
+}
